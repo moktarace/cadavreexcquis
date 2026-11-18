@@ -1,0 +1,76 @@
+/* Design tokens de Cadavre Exquis. La palette de l'interface est indépendante des six couleurs du dessin (src/editor/palette.ts). */
+:root {
+  /* Couleurs */
+  --ink: #3b2a63;
+  --ink-soft: #6c5a9b;
+  --ink-faint: #a89cc9;
+  --cream: #fff6dc;
+  --cream-deep: #fbe9b8;
+  --paper: #ffffff;
+  --yellow: #ffd84d;
+  --yellow-deep: #e9ad00;
+  --yellow-soft: #fff0a6;
+  --pink: #ff8fb8;
+  --pink-deep: #e0558f;
+  --pink-soft: #ffd5e5;
+  --lavender: #cdb8ff;
+  --lavender-deep: #9a7be0;
+  --lavender-soft: #ede5ff;
+  --violet-bar: #8c6bd6;
+  --violet-bar-deep: #6a4cb5;
+  --green: #62d58c;
+  --green-deep: #2fa35e;
+  --danger: #ef5b6a;
+  --danger-deep: #bb3445;
+  --danger-soft: #ffe0e4;
+  --stage-bg: #2d2150;
+
+  /* Rayons */
+  --radius-xs: 8px;
+  --radius-s: 12px;
+  --radius-m: 18px;
+  --radius-l: 26px;
+  --radius-pill: 999px;
+
+  /* Bordures et ombres: reliefs « boutons de console », ombre dure + ombre douce discrète */
+  --border-w: 3px;
+  --border: var(--border-w) solid var(--ink);
+  --line: 2px solid rgba(59, 42, 99, 0.28);
+  --lift: 4px;
+  --shadow-toy: 0 var(--lift) 0 var(--ink);
+  --shadow-soft: 0 8px 18px rgba(59, 42, 99, 0.14);
+  --shadow-inset: inset 0 3px 0 rgba(255, 255, 255, 0.55);
+
+  /* Typographie: ronde et lisible; l'accent « pixel » est un mono gras espacé */
+  --font-body: 'Nunito', 'Varela Round', ui-rounded, 'SF Pro Rounded', 'Hiragino Maru Gothic ProN', 'Segoe UI', system-ui, sans-serif;
+  --font-pixel: 'Press Start 2P', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --text-xs: 0.72rem;
+  --text-s: 0.86rem;
+  --text-m: 1rem;
+  --text-l: 1.25rem;
+  --text-xl: 1.7rem;
+  --text-hero: clamp(1.7rem, 7vw, 2.4rem);
+
+  /* Espacements */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* Zones tactiles et mise en page */
+  --tap: 48px;
+  --tap-s: 40px;
+  --content-w: 760px;
+  --dock-h: 72px;
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+
+  /* Mouvement */
+  --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --t-fast: 0.1s;
+  --t-med: 0.22s;
+}

@@ -1,0 +1,50 @@
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body, #root { min-height: 100%; margin: 0; }
+
+body {
+  font-family: var(--font-body);
+  font-size: var(--text-m);
+  line-height: 1.4;
+  color: var(--ink);
+  background-color: var(--cream);
+  /* Fond crème à petits points, très léger */
+  background-image: radial-gradient(rgba(59, 42, 99, 0.09) 1.4px, transparent 1.6px);
+  background-size: 18px 18px;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
+h1, h2, h3, p { margin: 0; }
+h2 { font-size: var(--text-l); font-weight: 900; }
+h3 { font-size: var(--text-m); font-weight: 800; }
+a { color: inherit; }
+img { max-width: 100%; height: auto; }
+
+:focus-visible {
+  outline: 4px solid var(--violet-bar);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+.muted { color: var(--ink-soft); }
+.pixel-label { font-family: var(--font-pixel); font-size: 0.6rem; letter-spacing: 0.06em; text-transform: uppercase; }
+
+@keyframes toy-pop { 0% { transform: scale(0.94); } 55% { transform: scale(1.04); } 100% { transform: scale(1); } }
+@keyframes toy-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes toy-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes toy-sheet { from { transform: translateY(40px) scale(0.97); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes toy-wiggle { 0%, 100% { transform: rotate(0); } 25% { transform: rotate(-6deg); } 75% { transform: rotate(6deg); } }
+@keyframes toy-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+@keyframes toy-twinkle { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(0.8); } }
+@keyframes toy-spin-steps { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
