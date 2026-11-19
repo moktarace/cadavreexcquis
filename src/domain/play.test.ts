@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { askLabel, briefTitle, caseRole, drawLabel, newContinuations, nextProposals, planWindow, progressMessage, publishedCopy, shuffle } from './play';
+import { askLabel, briefTitle, caseRole, drawLabel, nextProposals, planWindow, progressMessage, publishedCopy, shuffle } from './play';
 
 describe('messages de « Mes dessins »', () => {
   it('dit qu’un dessin attend une suite', () => {
@@ -97,21 +97,5 @@ describe('proposition de jeu', () => {
 
   it('ne propose rien quand rien n’est éligible', () => {
     expect(planWindow(0, 0, 24)).toBeNull();
-  });
-});
-
-describe('nouvelles suites', () => {
-  const cards = [{ id: 'a', childCount: 2 }, { id: 'b', childCount: 0 }, { id: 'c', childCount: 1 }];
-
-  it('repère les dessins dont le nombre de suites a augmenté', () => {
-    expect(newContinuations(cards, { a: 1, c: 1 }).map((c) => c.id)).toEqual(['a']);
-  });
-
-  it('considère comme nouvelle une suite jamais vue', () => {
-    expect(newContinuations(cards, {}).map((c) => c.id)).toEqual(['a', 'c']);
-  });
-
-  it('ne signale rien quand tout a été vu', () => {
-    expect(newContinuations(cards, { a: 2, b: 0, c: 1 })).toEqual([]);
   });
 });

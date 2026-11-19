@@ -71,3 +71,35 @@
 .share { display: inline-grid; gap: 4px; }
 .reveal__note { max-width: 420px; text-wrap: balance; margin-top: calc(var(--space-2) * -1); }
 .reveal__note a { color: var(--ink); font-weight: 800; }
+
+/* ───────────── À découvrir: ma case et la réponse d'un autre joueur ───────────── */
+.discover { display: grid; gap: var(--space-3); }
+.discovery {
+  display: grid; gap: var(--space-2); padding: var(--space-3); color: inherit; text-decoration: none;
+  background: var(--paper); border: var(--border); border-radius: var(--radius-m); box-shadow: var(--shadow-toy);
+}
+.discovery:active { transform: translateY(2px); box-shadow: 0 2px 0 var(--ink); }
+.discovery__pair { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: var(--space-2); }
+.discovery__pair figure { margin: 0; position: relative; aspect-ratio: 4 / 3; overflow: hidden; background: #fff; border: var(--border); border-radius: var(--radius-s); }
+.discovery__pair img { display: block; width: 100%; height: 100%; object-fit: cover; image-rendering: pixelated; }
+.discovery__pair figcaption {
+  position: absolute; left: 4px; bottom: 4px; padding: 1px 7px; font: 900 0.65rem / 1.3 var(--font-body);
+  background: var(--paper); border: 2px solid var(--ink); border-radius: var(--radius-pill);
+}
+.discovery__arrow { color: var(--ink); }
+.discovery__text { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); font: 800 var(--text-s) / 1.3 var(--font-body); }
+.discovery__text small { flex-basis: 100%; font-weight: 700; color: var(--ink-soft); }
+.new-dot { display: inline-block; padding: 1px 8px; font: 900 0.65rem / 1.4 var(--font-body); background: var(--green); border: 2px solid var(--ink); border-radius: var(--radius-pill); }
+
+/* ───────────── Réponse ouverte ───────────── */
+.reply { display: grid; gap: var(--space-3); justify-items: center; text-align: center; }
+.reply__pair { display: grid; gap: var(--space-2); width: 100%; max-width: 420px; justify-items: center; }
+.reply__pair figure { margin: 0; width: min(100%, 38dvh); display: grid; gap: var(--space-1); }
+.reply__pair img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; image-rendering: pixelated; background: #fff; border: var(--border); border-radius: var(--radius-s); box-shadow: var(--shadow-toy); }
+.reply__title { font: 900 var(--text-m) / 1.25 var(--font-body); text-wrap: balance; }
+.reply__arrow { transform: rotate(90deg); }
+@media (min-width: 700px) {
+  .reply__pair { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); max-width: 760px; align-items: center; }
+  .reply__pair figure { width: 100%; }
+  .reply__arrow { transform: none; }
+}

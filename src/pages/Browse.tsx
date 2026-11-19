@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { cardChildren, cardPath, cardSubtree, gameTheme, report } from '../backend/api';
 import { go, hrefOf } from '../app/router';
 import { useGame } from '../app/game';
+import { useMarkReplyRead } from '../app/replies';
 import { buildTree, cannotContinue, type Card, type TreeNode } from '../domain/cards';
 import { drawLabel } from '../domain/play';
 import { exportYonkoma, shareYonkoma } from '../editor/export';
@@ -15,6 +16,7 @@ import { ShareButton } from './ShareButton';
 export function CasePage({ id }: { id: string }) {
   const { me } = useGame();
   const path = useAsync(() => cardPath(id), [id]);
+  useMarkReplyRead(path.data);
   const kids = useAsync(() => cardChildren(id), [id]);
   const [notice, setNotice] = useState<string | null>(null);
   const [reporting, setReporting] = useState(false);
@@ -201,6 +203,7 @@ const isNarrow = () => typeof window !== 'undefined' && window.matchMedia?.('(ma
 export function StoryPage({ id }: { id: string }) {
   const { me } = useGame();
   const path = useAsync(() => cardPath(id), [id]);
+  useMarkReplyRead(path.data);
   const [mode, setMode] = useState(isNarrow() ? 'flip' : 'board');
   const [showAlt, setShowAlt] = useState(false);
   const [message, setMessage] = useState<string | null>(null);

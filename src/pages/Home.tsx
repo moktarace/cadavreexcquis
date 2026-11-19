@@ -1,12 +1,11 @@
 import { useState } from 'react';
-import { archiveHighlights, myCards, recentRoomCards, type ArchiveCard } from '../backend/api';
+import { archiveHighlights, recentRoomCards, type ArchiveCard } from '../backend/api';
 import { go, hrefOf } from '../app/router';
 import { useGame } from '../app/game';
 import { useNow } from '../app/hooks';
-import { loadSeen } from '../app/seen';
+import { useReplies } from '../app/replies';
 import type { Card } from '../domain/cards';
 import { archiveCaption, showArchives } from '../domain/discovery';
-import { newContinuations } from '../domain/play';
 import { Logo, StoryThumbnail, ToyButton, ToyCard, ToySpinner, WeeklyThemeCard, formatDelay } from '../ui';
 import { useAsync } from './shared';
 
@@ -37,9 +36,9 @@ export function NewSuitesBanner({ count }: { count: number }) {
   return (
     <ToyCard tone="green" className="banner">
       <p className="plain-text">
-        <strong>{count === 1 ? 'Quelqu’un a imaginé une suite à l’un de tes dessins !' : `${count} de tes dessins ont de nouvelles suites !`}</strong>
+        <strong>{count === 1 ? 'Quelqu’un a continué ton dessin !' : `${count} nouvelles suites à découvrir !`}</strong>
       </p>
-      <ToyButton variant="success" size="s" icon="eye" href={hrefOf({ name: 'mine' })}>Voir mes dessins</ToyButton>
+      <ToyButton variant="success" size="s" icon="eye" href={hrefOf({ name: 'mine' })}>Découvrir</ToyButton>
     </ToyCard>
   );
 }
@@ -85,15 +84,15 @@ export function HomePage() {
   const now = useNow(30_000);
   const roomId = g.game?.roomId;
   const gameId = g.game?.gameId;
-  const userId = g.me?.userId ?? null;
+  const replies = useReplies();
   const [retry, setRetry] = useState(0);
 
   const feed = useAsync(async () => {
     if (g.status !== 'ready' || !roomId || !gameId) return null;
-    const [recent, mine] = await Promise.all([recentRoomCards(roomId, RECENT_COUNT), userId ? myCards(userId) : Promise.resolve([])]);
+    const recent = await recentRoomCards(roomId, RECENT_COUNT);
     const archive = recent.length === 0 ? await archiveHighlights(gameId, 8).catch(() => []) : [];
-    return { recent, archive, fresh: newContinuations(mine, loadSeen()).length };
-  }, [g.status, roomId, gameId, userId, retry]);
+    return { recent, archive };
+  }, [g.status, roomId, gameId, retry]);
 
   return (
     <div className="screen">
@@ -123,6 +122,8 @@ export function HomePage() {
         </ToyButton>
       </div>
 
+      {replies.unread.length > 0 && <NewSuitesBanner count={replies.unread.length} />}
+
       {g.status === 'ready' && feed.error && (
         <div className="stack">
           <p className="hint">Les dessins n’ont pas pu être chargés : {feed.error}</p>
@@ -131,7 +132,6 @@ export function HomePage() {
       )}
       {g.status === 'ready' && !feed.error && (feed.data === null ? <ToySpinner label="Chargement des dessins" /> : (
         <>
-          {feed.data.fresh > 0 && <NewSuitesBanner count={feed.data.fresh} />}
           <HomeFeed recent={feed.data.recent} archive={feed.data.archive} />
         </>
       ))}

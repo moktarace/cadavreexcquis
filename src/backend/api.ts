@@ -1,5 +1,6 @@
 import { FINAL_CASE, type Card, type CaseNumber } from '../domain/cards';
 import { DECK_ORDER, DECK_PAGE_SIZE, pageBounds, type DeckFilter } from '../domain/discovery';
+import type { UnreadReply } from '../domain/discoveries';
 import type { Progress } from '../domain/play';
 import type { Project } from '../editor/project';
 import { previewPng } from '../editor/export';
@@ -178,6 +179,35 @@ export async function myCards(userId: string): Promise<Card[]> {
       .range(a, b),
   );
   return rows.map(toCard);
+}
+
+/** Cartes précises, par lots (l'URL d'une requête ne doit pas grandir sans limite). */
+export async function cardsByIds(ids: readonly string[]): Promise<Card[]> {
+  const out: Card[] = [];
+  for (let i = 0; i < ids.length; i += 50) {
+    const { data, error } = await db().from('contribution_cards').select('*').in('id', ids.slice(i, i + 50));
+    fail(error);
+    out.push(...(data ?? []).map(toCard));
+  }
+  return out;
+}
+
+// ───────────── Réponses à mes dessins ─────────────
+
+/** Continuations directes de mes cases que je n'ai pas encore ouvertes (200 au plus), les plus récentes d'abord. */
+export async function unreadReplies(limit = 100): Promise<UnreadReply[]> {
+  const { data, error } = await db().rpc('unread_replies', { p_limit: limit });
+  fail(error);
+  return ((data as any[]) ?? []).map((r) => ({ replyId: r.reply_id, parentId: r.parent_id, repliedAt: Date.parse(r.replied_at) }));
+}
+
+/** Marque des réponses comme lues; sans effet si elles le sont déjà (autre appareil, double envoi). */
+export async function markRepliesRead(userId: string, replyIds: readonly string[]): Promise<void> {
+  if (replyIds.length === 0) return;
+  const { error } = await db()
+    .from('reply_reads')
+    .upsert(replyIds.map((reply_id) => ({ user_id: userId, reply_id })), { onConflict: 'user_id,reply_id', ignoreDuplicates: true });
+  fail(error);
 }
 
 export async function cardPath(id: string): Promise<Card[]> {

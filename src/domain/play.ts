@@ -90,11 +90,6 @@ export function askLabel(caseNumber: number): string {
   return `À toi de dessiner la case ${caseNumber + 1} !`;
 }
 
-/** Dessins du joueur dont le nombre de suites a augmenté depuis sa dernière visite à « Mes dessins ». */
-export function newContinuations<T extends { id: string; childCount: number }>(cards: readonly T[], seen: Readonly<Record<string, number>>): T[] {
-  return cards.filter((c) => c.childCount > (seen[c.id] ?? 0));
-}
-
 /** Mélange déterministe pour un générateur donné (Fisher-Yates). */
 export function shuffle<T>(items: readonly T[], rng: () => number = Math.random): T[] {
   const out = [...items];

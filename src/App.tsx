@@ -1,11 +1,13 @@
 import { GameProvider } from './app/game';
 import { hrefOf, useRoute, type Route } from './app/router';
 import { useOnline } from './app/hooks';
+import { RepliesProvider, useReplies } from './app/replies';
 import { EditorScreen } from './editor/ui/EditorScreen';
 import { CasePage, StoryPage, TreePage } from './pages/Browse';
 import { BrowsePage } from './pages/Continue';
 import { PlayPage } from './pages/Play';
 import { PublishedPage } from './pages/Published';
+import { ReplyPage } from './pages/Reply';
 import { HomePage } from './pages/Home';
 import { ReadPage } from './pages/Read';
 import { ArchivesPage, MinePage, WeekPage } from './pages/Library';
@@ -24,9 +26,9 @@ interface NavEntry {
 const PLAY: NavEntry = { id: 'play', label: 'Jouer', icon: 'pencil', route: { name: 'play', startId: null }, active: ['play', 'browse'] };
 const SIDES: NavEntry[] = [
   { id: 'read', label: 'Lire', icon: 'book', route: { name: 'read' }, active: ['read', 'archives', 'week', 'case', 'story', 'tree'] },
-  { id: 'mine', label: 'Mes dessins', icon: 'star', route: { name: 'mine' }, active: ['mine'] },
+  { id: 'mine', label: 'Mes dessins', icon: 'star', route: { name: 'mine' }, active: ['mine', 'reply'] },
 ];
-const toItem = (n: NavEntry, current: Route['name']): DockItem => ({ id: n.id, label: n.label, icon: n.icon, href: hrefOf(n.route), active: n.active.includes(current) });
+const toItem = (n: NavEntry, current: Route['name'], badge = false): DockItem => ({ id: n.id, label: n.label, icon: n.icon, href: hrefOf(n.route), active: n.active.includes(current), badge });
 
 function Page({ route }: { route: Route }) {
   switch (route.name) {
@@ -42,6 +44,8 @@ function Page({ route }: { route: Route }) {
       return <PublishedPage id={route.id} />;
     case 'case':
       return <CasePage id={route.id} />;
+    case 'reply':
+      return <ReplyPage id={route.id} />;
     case 'story':
       return <StoryPage id={route.id} />;
     case 'tree':
@@ -59,27 +63,34 @@ function Page({ route }: { route: Route }) {
   }
 }
 
-export function App() {
+function Screens() {
   const route = useRoute();
   const online = useOnline();
+  const { hasUnread } = useReplies();
 
+  return route.name === 'draw' ? (
+    <EditorScreen key={route.parentId ?? 'root'} parentId={route.parentId} />
+  ) : (
+    <div className="app-shell">
+      {!online && (
+        <p className="offline-banner" role="status">
+          Hors connexion : tu peux dessiner, mais pas publier ni continuer une case.
+        </p>
+      )}
+      <main>
+        <Page route={route} />
+      </main>
+      <Dock items={SIDES.map((n) => toItem(n, route.name, n.id === 'mine' && hasUnread))} center={toItem(PLAY, route.name)} />
+    </div>
+  );
+}
+
+export function App() {
   return (
     <GameProvider>
-      {route.name === 'draw' ? (
-        <EditorScreen key={route.parentId ?? 'root'} parentId={route.parentId} />
-      ) : (
-        <div className="app-shell">
-          {!online && (
-            <p className="offline-banner" role="status">
-              Hors connexion : tu peux dessiner, mais pas publier ni continuer une case.
-            </p>
-          )}
-          <main>
-            <Page route={route} />
-          </main>
-          <Dock items={SIDES.map((n) => toItem(n, route.name))} center={toItem(PLAY, route.name)} />
-        </div>
-      )}
+      <RepliesProvider>
+        <Screens />
+      </RepliesProvider>
     </GameProvider>
   );
 }

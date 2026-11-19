@@ -43,13 +43,14 @@ Trois migrations dans [supabase/migrations](supabase/migrations) :
 5. `0005_png_only.sql` : supprime le projet JSON (politiques du bucket `projects`, type d'asset, colonne `format_version`).
 6. `0006_discovery.sql` : `archive_weeks()` et `archive_highlights()` (lecture des archives sans limite arbitraire, jamais la partie courante ni une partie privée), ordre total de `contribution_subtree`.
 7. `0007_progress.sql` : `contribution_progress()`, ce que les autres ont fait de tes dessins (suites, histoire terminée), pour « Mes dessins ».
+8. `0008_replies.sql` : table `reply_reads` (état « lu » par joueur et par réponse, RLS : on ne lit et n'écrit que le sien, jamais de modification) et `unread_replies()`. Les réponses déjà publiées au moment de la migration sont considérées comme connues.
 
 Mise en place sur un projet Supabase :
 
 1. Authentication > Sign In / Providers : activer **Allow anonymous sign-ins**.
 2. Appliquer les migrations : soit coller les trois fichiers dans l'éditeur SQL du tableau de bord, dans l'ordre; soit ajouter `SUPABASE_DB_URL` dans `.env.local` (Project Settings > Database > Connection string) puis `npm run db:apply`.
 
-`npm run db:check` exécute ces migrations dans PGlite avec des rôles et une RLS simulés (34 vérifications : profil automatique, partie courante, auto-continuation refusée, case 4 finale, projet réutilisé ou d'autrui refusé, insertion directe refusée, projet publié figé, signalements, notifications, archives, pagination déterministe). Cela ne remplace pas un test sur la vraie base; les accès réellement concurrents et le stockage ne sont pas testés.
+`npm run db:check` exécute ces migrations dans PGlite avec des rôles et une RLS simulés (43 vérifications : profil automatique, partie courante, auto-continuation refusée, case 4 finale, projet réutilisé ou d'autrui refusé, insertion directe refusée, projet publié figé, signalements, notifications, archives, pagination déterministe, états de lecture des réponses). Cela ne remplace pas un test sur la vraie base; les accès réellement concurrents et le stockage ne sont pas testés.
 
 ## Interface (refonte rétro-console)
 
@@ -66,9 +67,10 @@ Direction artistique « console portable » allégée : fond crème pointillé, 
 
 ## Parcours (phase C)
 
-- **Accueil** : thème actif et délai avant le prochain (heure du serveur), Jouer, Commencer une histoire, bandeau « Quelqu'un a imaginé une suite à l'un de tes dessins ! » (suites arrivées depuis ta dernière visite à Mes dessins, mémorisées sur l'appareil), derniers dessins de la salle. Quand la salle de la semaine est vide, quelques dessins publics de parties précédentes sont affichés comme « Archives », à lire seulement : ils ne sont jamais ajoutés à la salle ni à la partie courante.
+- **Accueil** : thème actif et délai avant le prochain (heure du serveur), Jouer, Commencer une histoire, bandeau « Quelqu'un a continué ton dessin ! » quand des réponses attendent d'être découvertes, derniers dessins de la salle. Quand la salle de la semaine est vide, quelques dessins publics de parties précédentes sont affichés comme « Archives », à lire seulement : ils ne sont jamais ajoutés à la salle ni à la partie courante.
 - **Lire** (`#/read`) : histoires terminées et en cours de la semaine, accès à toutes les histoires de la semaine et aux semaines précédentes (archives).
-- **Mes dessins** (`#/mine`) : tes cases avec ce qui leur est arrivé (« Personne n'a encore continué ton dessin. », « 2 personnes ont imaginé une suite ! », « Une histoire complète est née de ton dessin ! »), badge « Nouveau », accès aux suites et à l'histoire complète, invitation à continuer. Ni score ni classement. Les notifications push existantes ouvrent la case concernée.
+- **Mes dessins** (`#/mine`) : « À découvrir » (seulement s'il y a des réponses non ouvertes) montre pour chaque réponse directe à l'une de tes cases ta case, une flèche et la case dessinée par l'autre joueur (trois joueurs = trois paires). Toucher une paire ouvre `#/reply/<id>` : « Voici ce que quelqu'un d'autre a fait de ton dessin ! », les deux images, « Lire l'histoire depuis le début », les autres réponses (ou fins) à la même case, les fins de l'histoire, retour à Mes dessins. « Tous mes dessins » garde toutes tes cases, une fois chacune, avec « En attente d'une suite », « 1 suite », « 3 suites » ou « Dernière case ». États vides : « Tu n'as pas encore dessiné ! », « Tes dessins attendent que d'autres joueurs inventent la suite ! », « Tu as découvert toutes les nouvelles suites ! ». Ni score, ni like, ni commentaire.
+- **Pastille** : un point sur « Mes dessins » dans le dock tant qu'une réponse n'a pas été ouverte (pas de chiffre, aucune notification push ni permission). Est une nouveauté la continuation **directe**, par un autre joueur, d'une de tes cases (y compris une case 4 pour l'auteur de la case 3); une suite plus lointaine notifie l'auteur de la case parente, pas celui de la case 1. L'état « lu » est enregistré sur le serveur (`reply_reads`) quand la réponse est réellement ouverte (écran de réponse, fiche de la case ou lien d'une notification push), pas en ouvrant Mes dessins : il suit le compte sur tous ses appareils et survit au rechargement. L'état est relu au lancement, au retour sur l'application, à la reconnexion et toutes les 45 s; une erreur réseau conserve les nouveautés connues (dernier état mémorisé sur l'appareil pour la pastille) et une ouverture non enregistrée est renvoyée plus tard. La table `notifications` existante est la file d'attente du Web Push (abonnés seulement, regroupée, vidée à l'envoi) : elle ne sert pas d'état de lecture.
 - **Case** : le fil jusqu'ici, « Dessiner la suite », « Toutes les suites » (vue arbre secondaire), suites imaginées par les autres, signaler.
 - **Éditeur** : le dessin est soit une case 1, soit la suite d'une case. « Publier ma case » affiche une vérification (thème, position dans l'histoire, rappel de la dernière case), envoie l'aperçu PNG dans Supabase Storage, puis appelle `publish_contribution`; le serveur applique toutes les règles.
 - **Après la publication** (`#/published/<case>`) : la nouvelle case apparaît à la suite des précédentes (révélation animée, sans score) avec le message adapté (« Ta première case est publiée ! », « Ta suite est publiée ! », « Votre histoire est terminée ! ») et une note qui renvoie vers « Mes dessins ». Actions : cases 1 à 3 « Continuer une autre histoire » et « Voir mon histoire »; case 4 « Lire notre histoire » et « Jouer à nouveau ». Si aucune histoire n'est continuable, « Commencer une nouvelle histoire » est proposé à la place (jamais de liste vide).
@@ -115,7 +117,7 @@ Mise en service côté serveur (une fois) :
 3. `npx supabase secrets set --env-file supabase/.env.functions`.
 4. `npx supabase functions deploy dispatch --no-verify-jwt`.
 5. Tableau de bord > Database > Extensions : activer `pg_cron` et `pg_net`.
-6. Éditeur SQL : appliquer `0004_notifications.sql`, `0005_png_only.sql`, `0006_discovery.sql` puis `0007_progress.sql`, puis le contenu de `supabase/schedule.local.sql` (planifie l'envoi chaque minute, seulement s'il y a quelque chose à envoyer, et l'annonce du lundi).
+6. Éditeur SQL : appliquer `0004_notifications.sql`, `0005_png_only.sql`, `0006_discovery.sql` `0007_progress.sql` puis `0008_replies.sql`, puis le contenu de `supabase/schedule.local.sql` (planifie l'envoi chaque minute, seulement s'il y a quelque chose à envoyer, et l'annonce du lundi).
 7. Rebuilder et déployer l'application avec `VITE_VAPID_PUBLIC_KEY`.
 
 ## Calendrier et tests

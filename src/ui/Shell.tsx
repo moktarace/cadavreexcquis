@@ -54,6 +54,8 @@ export interface DockItem {
   icon: IconName;
   href: string;
   active: boolean;
+  /** Pastille sans chiffre: quelque chose de nouveau attend dans cet onglet. */
+  badge?: boolean;
 }
 
 interface DockProps {
@@ -66,8 +68,11 @@ export function Dock({ items, center }: DockProps) {
   const half = Math.ceil(items.length / 2);
   const render = (it: DockItem) => (
     <a key={it.id} className={`dock__item ${it.active ? 'is-active' : ''}`} href={it.href} aria-current={it.active ? 'page' : undefined}>
-      <PixelIcon name={it.icon} size={24} />
-      <span>{it.label}</span>
+      <span className="dock__icon">
+        <PixelIcon name={it.icon} size={24} />
+        {it.badge && <span className="dock__badge" aria-hidden="true" />}
+      </span>
+      <span>{it.label}{it.badge && <span className="sr-only"> : nouvelles suites à découvrir</span>}</span>
     </a>
   );
   return (

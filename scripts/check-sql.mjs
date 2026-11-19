@@ -279,4 +279,73 @@ await check('progression: suites, histoire terminée et dernière case', async (
   if (by[storyEnd].descendants !== 0 || by[storyEnd].finished !== 1) throw new Error(JSON.stringify(by[storyEnd]));
   if (by[b1].descendants !== 0 || by[b1].finished !== 0 || by[b1].finished_leaf !== null) throw new Error(JSON.stringify(by[b1]));
 });
+
+// ───────────── Réponses à découvrir (0008) ─────────────
+for (const n of ['ana', 'ben', 'cleo']) users[n] = (await db.query('insert into auth.users default values returning id')).rows[0].id;
+const unreadOf = async (u) => (await as(users[u], 'select reply_id, parent_id from unread_replies()')).map((r) => r.reply_id);
+const readOf = async (u) => (await as(users[u], 'select reply_id from reply_reads')).map((r) => r.reply_id);
+const markAs = (u, replyId, asUser = u) => as(users[asUser], 'insert into reply_reads(user_id, reply_id) values ($1,$2) on conflict do nothing', [users[u], replyId]);
+let ana1, benReply, cleoReply, cleoCase3, anaEnd;
+await check('réponses: aucune nouveauté pour une case 1 publiée', async () => {
+  ana1 = await pub('ana', aliceRoom, null);
+  if ((await unreadOf('ana')).length) throw new Error('nouveauté inattendue');
+});
+await check('réponses: Bob continue Alice, Alice reçoit une nouveauté (pas Bob)', async () => {
+  benReply = await pub('ben', aliceRoom, ana1);
+  const u = await unreadOf('ana');
+  if (u.join() !== benReply) throw new Error(u.join());
+  if ((await unreadOf('ben')).length) throw new Error('l’auteur de la réponse ne doit rien recevoir');
+});
+await check('réponses: deux réponses distinctes à la même case', async () => {
+  cleoReply = await pub('cleo', aliceRoom, ana1);
+  const u = await unreadOf('ana');
+  if (u.length !== 2 || !u.includes(benReply) || !u.includes(cleoReply)) throw new Error(u.join());
+  if (u[0] !== cleoReply) throw new Error('la plus récente doit venir en premier');
+});
+await check('réponses: ouvrir une seule réponse laisse l’autre non lue, de façon idempotente', async () => {
+  await markAs('ana', benReply);
+  await markAs('ana', benReply);
+  const u = await unreadOf('ana');
+  if (u.join() !== cleoReply) throw new Error(u.join());
+  if ((await readOf('ana')).join() !== benReply) throw new Error('état de lecture');
+});
+await check('réponses: un autre appareil du même compte voit le même état', async () => {
+  const again = await as(users.ana, 'select reply_id from unread_replies()');
+  if (again.length !== 1 || again[0].reply_id !== cleoReply) throw new Error(JSON.stringify(again));
+});
+await check('réponses: RLS, on ne lit et n’écrit que son propre état', async () => {
+  if ((await readOf('ben')).length) throw new Error('état d’un autre joueur visible');
+  await expectErr('row-level security', () => markAs('ana', cleoReply, 'ben'));
+  await expectErr('row-level security', () => markAs('ben', cleoReply));
+  await expectErr('row-level security', () => markAs('ana', ana1));
+  const [upd] = await as(users.ana, 'with u as (update reply_reads set read_at = now() returning 1) select count(*)::int n from u');
+  const [del] = await as(users.ana, 'with d as (delete from reply_reads returning 1) select count(*)::int n from d');
+  if (upd.n !== 0 || del.n !== 0) throw new Error('un état de lecture ne se modifie pas');
+  if ((await readOf('ana')).length !== 1) throw new Error('état perdu');
+  if ((await as(null, 'select * from reply_reads')).length) throw new Error('anon lit');
+});
+await check('réponses: une suite plus lointaine notifie l’auteur parent, pas l’auteur de la case 1', async () => {
+  cleoCase3 = await pub('cleo', aliceRoom, benReply);
+  const ben = await unreadOf('ben');
+  if (ben.join() !== cleoCase3) throw new Error(ben.join());
+  const ana = await unreadOf('ana');
+  if (ana.join() !== cleoReply) throw new Error('Ana ne doit pas être notifiée de la case 3');
+});
+await check('réponses: une case 4 notifie l’auteur de la case 3 et ne peut pas être continuée', async () => {
+  anaEnd = await pub('ana', aliceRoom, cleoCase3);
+  const cleo = await unreadOf('cleo');
+  if (cleo.join() !== anaEnd) throw new Error(cleo.join());
+  if ((await unreadOf('ana')).join() !== cleoReply) throw new Error('on ne se notifie pas soi-même');
+  await expectErr('PARENT_IS_FINAL', () => pub('ben', aliceRoom, anaEnd));
+});
+await check('réponses: le rattrapage de la migration marque les réponses existantes comme connues', async () => {
+  const sql = readFileSync(`${dir}/0008_replies.sql`, 'utf8');
+  const backfill = sql.slice(sql.indexOf('insert into public.reply_reads'), sql.indexOf('on conflict do nothing;') + 'on conflict do nothing;'.length);
+  if ((await unreadOf('ben')).length === 0) throw new Error('précondition: Ben a une nouveauté');
+  await db.exec(backfill);
+  for (const u of ['ana', 'ben', 'cleo', 'alice', 'bob', 'chloe']) {
+    const rows = await unreadOf(u);
+    if (rows.length) throw new Error(`${u}: ${rows.length} non lues après rattrapage`);
+  }
+});
 console.log(results.join('\n'));

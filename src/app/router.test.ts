@@ -12,6 +12,7 @@ describe('routeur par hash', () => {
     ['#/browse', { name: 'browse' }],
     ['#/published/p1', { name: 'published', id: 'p1' }],
     ['#/case/abc-123', { name: 'case', id: 'abc-123' }],
+    ['#/reply/r-1', { name: 'reply', id: 'r-1' }],
     ['#/story/xyz', { name: 'story', id: 'xyz' }],
     ['#/draw', { name: 'draw', parentId: null }],
     ['#/draw/d1', { name: 'draw', parentId: 'd1' }],
@@ -27,6 +28,7 @@ describe('routeur par hash', () => {
     expect(parseHash('#/case/<script>')).toEqual({ name: 'home' });
     expect(parseHash('#/week/%20')).toEqual({ name: 'archives' });
     expect(parseHash('#/published')).toEqual({ name: 'home' });
+    expect(parseHash('#/reply')).toEqual({ name: 'mine' });
   });
 
   it('produit des liens qui se relisent à l’identique', () => {
@@ -41,6 +43,7 @@ describe('routeur par hash', () => {
       { name: 'read' },
       { name: 'browse' },
       { name: 'published', id: 'p2' },
+      { name: 'reply', id: 'r2' },
     ];
     for (const r of routes) expect(parseHash(hrefOf(r))).toEqual(r);
   });

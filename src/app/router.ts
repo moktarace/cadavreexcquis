@@ -6,6 +6,7 @@ export type Route =
   | { name: 'read' }
   | { name: 'browse' }
   | { name: 'case'; id: string }
+  | { name: 'reply'; id: string }
   | { name: 'story'; id: string }
   | { name: 'tree'; id: string }
   | { name: 'mine' }
@@ -33,6 +34,8 @@ export function parseHash(hash: string): Route {
       return id ? { name: 'published', id } : { name: 'home' };
     case 'case':
       return id ? { name: 'case', id } : { name: 'home' };
+    case 'reply':
+      return id ? { name: 'reply', id } : { name: 'mine' };
     case 'story':
       return id ? { name: 'story', id } : { name: 'home' };
     case 'tree':
@@ -57,6 +60,7 @@ export function hrefOf(r: Route): string {
     case 'home':
       return '#/';
     case 'case':
+    case 'reply':
     case 'story':
     case 'tree':
     case 'week':
