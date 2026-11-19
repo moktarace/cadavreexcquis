@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { cardPath, explain, publish, type Target } from '../../backend/api';
+import { ApiError, cardPath, explain, publish, type Target } from '../../backend/api';
 import { useGame } from '../../app/game';
 import { useOnline } from '../../app/hooks';
 import { go } from '../../app/router';
@@ -9,6 +9,7 @@ import type { EditorSession } from '../session';
 import { caseRole } from '../../domain/play';
 import type { BriefInfo } from './Brief';
 import { Thumb } from './Panels';
+import { cardAlt } from '../../domain/moderation';
 
 interface Props {
   session: EditorSession;
@@ -24,6 +25,7 @@ export function PublishSheet({ session, target, brief, onClose }: Props) {
   const online = useOnline();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [periodOver, setPeriodOver] = useState(false);
   const project = session.current();
   const parentId = target.kind === 'continue' ? target.parentId : null;
   const context = useAsync(() => (parentId ? cardPath(parentId) : Promise.resolve([])), [parentId]);
@@ -44,6 +46,7 @@ export function PublishSheet({ session, target, brief, onClose }: Props) {
       go({ name: 'published', id });
     } catch (e) {
       setError(explain(e));
+      setPeriodOver(e instanceof ApiError && (e.code === 'GAME_EXPIRED' || e.code === 'GAME_NOT_ACTIVE'));
       setBusy(false);
     }
   };
@@ -68,7 +71,7 @@ export function PublishSheet({ session, target, brief, onClose }: Props) {
       <div className="publish-preview">
         {context.data?.map((c) => (
           <figure key={c.id}>
-            <img src={c.previewUrl} alt={`Case ${c.caseNumber} de ${c.authorName}`} width={80} height={60} />
+            <img src={c.previewUrl} alt={cardAlt(c)} width={80} height={60} />
             <figcaption>{c.caseNumber}</figcaption>
           </figure>
         ))}
@@ -82,6 +85,15 @@ export function PublishSheet({ session, target, brief, onClose }: Props) {
       </p>
       {blocked && <ToyCard tone="pink"><p>{blocked}</p></ToyCard>}
       {error && <ToyCard tone="error"><p role="alert">{error}</p></ToyCard>}
+      {periodOver && (
+        <div className="row-buttons">
+          {target.kind === 'root' ? (
+            <ToyButton variant="primary" icon="star" onClick={() => { setError(null); setPeriodOver(false); g.reload(); }}>Rejoindre le thème de la semaine</ToyButton>
+          ) : (
+            <ToyButton variant="primary" icon="home" onClick={() => go({ name: 'home' })}>Voir le thème de la semaine</ToyButton>
+          )}
+        </div>
+      )}
     </ToyDialog>
   );
 }

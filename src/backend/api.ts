@@ -1,6 +1,7 @@
 import { FINAL_CASE, type Card, type CaseNumber } from '../domain/cards';
 import { DECK_ORDER, DECK_PAGE_SIZE, pageBounds, type DeckFilter } from '../domain/discovery';
 import type { UnreadReply } from '../domain/discoveries';
+import { hiddenPlaceholder, type HiddenKind, type ReportCategory } from '../domain/moderation';
 import type { Progress } from '../domain/play';
 import type { Project } from '../editor/project';
 import { previewPng } from '../editor/export';
@@ -24,7 +25,17 @@ const MESSAGES: Record<string, string> = {
   GAME_NOT_ACTIVE: 'Une nouvelle première case se crée dans le thème actif.',
   ROOM_NOT_FOUND: 'Salle introuvable.',
   ROOM_FULL: 'Cette salle est complète.',
-  PARENT_NOT_FOUND: 'Cette case est introuvable.',
+  PARENT_NOT_FOUND: 'Cette case n’est plus disponible : sa période est peut-être terminée.',
+  PARENT_HIDDEN: 'Ce dessin est temporairement masqué : on ne peut pas le continuer pour le moment.',
+  GAME_EXPIRED: 'Cette période est terminée : les dessins de ce thème ont disparu. Rejoins le thème de la semaine !',
+  CONTRIBUTION_NOT_FOUND: 'Ce dessin n’est plus disponible.',
+  CANNOT_REPORT_OWN: 'Tu ne peux pas signaler ton propre dessin.',
+  ALREADY_REPORTED: 'Tu as déjà signalé ce dessin.',
+  REPORT_RATE_LIMITED: 'Trop de signalements en peu de temps, réessaie un peu plus tard.',
+  INVALID_CATEGORY: 'Choisis un motif de signalement.',
+  FORBIDDEN: 'Accès réservé à l’administration.',
+  PLAN_CHANGED: 'Les dessins ont changé depuis l’aperçu : relance l’aperçu avant de confirmer.',
+  CONFIRMATION_REQUIRED: 'Confirmation requise.',
   PARENT_IS_FINAL: 'Cette histoire est terminée.',
   CANNOT_CONTINUE_OWN: 'Tu ne peux pas continuer ton propre dessin.',
   RATE_LIMITED: 'Trop de publications en peu de temps, réessaie un peu plus tard.',
@@ -48,7 +59,7 @@ function db() {
 }
 
 function fail(error: { message: string } | null): asserts error is null {
-  if (error) throw new ApiError('SERVER', explain(error));
+  if (error) throw new ApiError(Object.keys(MESSAGES).find((code) => error.message.includes(code)) ?? 'SERVER', explain(error));
 }
 
 // ───────────── Session anonyme persistante ─────────────
@@ -134,9 +145,11 @@ function toCard(r: any): Card {
     authorName: r.author_nickname,
     caseNumber: r.case_number as CaseNumber,
     parentId: r.parent_id,
-    previewUrl: db().storage.from('previews').getPublicUrl(r.preview_path).data.publicUrl,
+    previewUrl: r.hidden || !r.preview_path ? hiddenPlaceholder(r.hidden_kind) : db().storage.from('previews').getPublicUrl(r.preview_path).data.publicUrl,
     publishedAt: Date.parse(r.published_at),
     childCount: r.child_count,
+    hidden: !!r.hidden,
+    hiddenKind: (r.hidden_kind ?? null) as HiddenKind | null,
   };
 }
 
@@ -242,6 +255,7 @@ export function deckQuery(client: Db, q: DeckQuery, head = false) {
     .from('contribution_cards')
     .select('*', { count: 'exact', head })
     .eq('room_id', q.roomId)
+    .eq('hidden', false)
     .lt('case_number', FINAL_CASE);
   if (q.userId) b = b.neq('author_id', q.userId);
   if (q.depth) b = b.eq('case_number', q.depth);
@@ -277,6 +291,7 @@ export async function finishedCards(roomId: string, limit: number): Promise<Card
     .from('contribution_cards')
     .select('*')
     .eq('room_id', roomId)
+    .eq('hidden', false)
     .eq('case_number', FINAL_CASE)
     .order('published_at', { ascending: false })
     .order('id', { ascending: false })
@@ -292,6 +307,7 @@ export async function latestOpenOwn(roomId: string, userId: string): Promise<Car
     .select('*')
     .eq('room_id', roomId)
     .eq('author_id', userId)
+    .eq('hidden', false)
     .lt('case_number', FINAL_CASE)
     .order('published_at', { ascending: false })
     .order('id', { ascending: false })
@@ -316,6 +332,7 @@ export async function recentRoomCards(roomId: string, limit: number): Promise<Ca
     .from('contribution_cards')
     .select('*')
     .eq('room_id', roomId)
+    .eq('hidden', false)
     .order('published_at', { ascending: false })
     .order('id', { ascending: false })
     .limit(limit);
@@ -412,9 +429,210 @@ export async function publish(project: Project, target: Target, game: CurrentGam
   }
 }
 
-export async function report(contributionId: string, reporterId: string, reason: string): Promise<void> {
-  const { error } = await db()
-    .from('reports')
-    .insert({ contribution_id: contributionId, reporter_id: reporterId, reason: reason.slice(0, 500) });
-  if (error && !/duplicate key/i.test(error.message)) fail(error);
+/** Premier signalement valide: le dessin est masqué en attendant l'examen. Renvoie « hidden » ou « recorded ». */
+export async function reportContribution(contributionId: string, category: ReportCategory, details: string): Promise<'hidden' | 'recorded'> {
+  const { data, error } = await db().rpc('report_contribution', { p_contribution: contributionId, p_category: category, p_details: details.trim() || null });
+  fail(error);
+  return data === 'hidden' ? 'hidden' : 'recorded';
+}
+
+// ───────────── Administration (toutes les opérations sont revérifiées côté serveur par is_admin()) ─────────────
+
+export async function isAdmin(): Promise<boolean> {
+  const { data, error } = await db().rpc('is_admin');
+  return !error && data === true;
+}
+
+const previewUrl = (path: string | null) => (path ? db().storage.from('previews').getPublicUrl(path).data.publicUrl : null);
+const ms = (v: string | null) => (v ? Date.parse(v) : null);
+
+export interface AdminGame {
+  gameId: string;
+  isoYear: number;
+  isoWeek: number;
+  themeText: string;
+  isPrivate: boolean;
+  expiresAtMs: number | null;
+  purgedAtMs: number | null;
+  contributions: number;
+}
+
+export async function adminGames(): Promise<AdminGame[]> {
+  const { data, error } = await db().rpc('admin_games');
+  fail(error);
+  return ((data as any[]) ?? []).map((g) => ({
+    gameId: g.game_id, isoYear: g.iso_year, isoWeek: g.iso_week, themeText: g.theme_text, isPrivate: g.is_private,
+    expiresAtMs: ms(g.expires_at), purgedAtMs: ms(g.purged_at), contributions: g.contributions,
+  }));
+}
+
+export type AdminStatusFilter = 'published' | 'review' | 'removed' | 'deleted' | 'reported';
+
+export interface AdminFilters {
+  gameId?: string;
+  authorId?: string;
+  status?: AdminStatusFilter;
+  search?: string;
+}
+
+export interface AdminContribution {
+  id: string;
+  gameId: string;
+  isoYear: number;
+  isoWeek: number;
+  themeText: string;
+  authorId: string;
+  authorName: string;
+  caseNumber: number;
+  parentId: string | null;
+  previewUrl: string | null;
+  status: 'published' | 'hidden';
+  hiddenKind: HiddenKind | null;
+  publishedAt: number;
+  expiresAtMs: number | null;
+  childCount: number;
+  openReports: number;
+}
+
+export const ADMIN_PAGE = 40;
+
+export async function adminContributions(filters: AdminFilters, offset: number): Promise<{ items: AdminContribution[]; total: number }> {
+  const { data, error } = await db().rpc('admin_contributions', {
+    p_game: filters.gameId ?? null, p_author: filters.authorId ?? null, p_status: filters.status ?? null,
+    p_search: filters.search?.trim() || null, p_limit: ADMIN_PAGE, p_offset: offset,
+  });
+  fail(error);
+  const rows = (data as any[]) ?? [];
+  return {
+    total: rows[0] ? Number(rows[0].total) : 0,
+    items: rows.map((r) => ({
+      id: r.id, gameId: r.game_id, isoYear: r.iso_year, isoWeek: r.iso_week, themeText: r.theme_text,
+      authorId: r.author_id, authorName: r.author_nickname, caseNumber: r.case_number, parentId: r.parent_id,
+      previewUrl: previewUrl(r.preview_path), status: r.status, hiddenKind: r.hidden_kind, publishedAt: Date.parse(r.published_at),
+      expiresAtMs: ms(r.expires_at), childCount: r.child_count, openReports: r.open_reports,
+    })),
+  };
+}
+
+export interface AdminReport {
+  reportId: string;
+  contributionId: string;
+  category: ReportCategory;
+  details: string | null;
+  status: 'open' | 'upheld' | 'dismissed' | 'abusive';
+  createdAt: number;
+  reporterName: string;
+  reporterBlocked: boolean;
+  reporterReports: number;
+  contributionStatus: 'published' | 'hidden';
+  hiddenKind: HiddenKind | null;
+  previewUrl: string | null;
+  caseNumber: number;
+  authorName: string;
+  themeText: string;
+}
+
+export async function adminReports(status: AdminReport['status'] | null, offset = 0): Promise<{ items: AdminReport[]; total: number }> {
+  const { data, error } = await db().rpc('admin_reports', { p_status: status, p_limit: ADMIN_PAGE, p_offset: offset });
+  fail(error);
+  const rows = (data as any[]) ?? [];
+  return {
+    total: rows[0] ? Number(rows[0].total) : 0,
+    items: rows.map((r) => ({
+      reportId: r.report_id, contributionId: r.contribution_id, category: r.category, details: r.details, status: r.status,
+      createdAt: Date.parse(r.created_at), reporterName: r.reporter_nickname, reporterBlocked: r.reporter_blocked,
+      reporterReports: r.reporter_reports, contributionStatus: r.contribution_status, hiddenKind: r.hidden_kind,
+      previewUrl: previewUrl(r.preview_path), caseNumber: r.case_number, authorName: r.author_nickname, themeText: r.theme_text,
+    })),
+  };
+}
+
+export async function adminSetHidden(ids: readonly string[], hide: boolean): Promise<number> {
+  const { data, error } = await db().rpc('admin_set_hidden', { p_ids: ids, p_hide: hide });
+  fail(error);
+  return Number(data ?? 0);
+}
+
+export async function adminReviewReport(reportId: string, status: 'dismissed' | 'abusive' | 'upheld', blockReporter = false): Promise<void> {
+  const { error } = await db().rpc('admin_review_report', { p_report: reportId, p_status: status, p_block: blockReporter });
+  fail(error);
+}
+
+export type CleanupMode = 'selection' | 'story';
+
+export interface CleanupItem {
+  id: string;
+  action: 'delete' | 'tombstone';
+  caseNumber: number;
+  author: string;
+  previewUrl: string | null;
+  chosen: boolean;
+}
+
+export interface CleanupPreview {
+  mode: CleanupMode;
+  selected: number;
+  deleteRows: number;
+  tombstoneRows: number;
+  cascadedRows: number;
+  stories: number;
+  authors: number;
+  files: number;
+  reports: number;
+  reads: number;
+  notifications: number;
+  childrenKept: number;
+  signature: string;
+  items: CleanupItem[];
+}
+
+export async function adminCleanupPreview(ids: readonly string[], mode: CleanupMode): Promise<CleanupPreview> {
+  const { data, error } = await db().rpc('admin_cleanup_preview', { p_ids: ids, p_mode: mode });
+  fail(error);
+  const p = data as any;
+  return {
+    mode: p.mode, selected: p.selected, deleteRows: p.delete_rows, tombstoneRows: p.tombstone_rows, cascadedRows: p.cascaded_rows,
+    stories: p.stories, authors: p.authors, files: p.files, reports: p.reports, reads: p.reads, notifications: p.notifications,
+    childrenKept: p.children_kept, signature: p.signature,
+    items: (p.items ?? []).map((i: any) => ({ id: i.id, action: i.action, caseNumber: i.case_number, author: i.author, previewUrl: previewUrl(i.path), chosen: i.chosen })),
+  };
+}
+
+/** La suppression n'a lieu que si l'aperçu confirmé correspond encore à l'état des données. */
+export async function adminCleanupExecute(ids: readonly string[], mode: CleanupMode, signature: string): Promise<{ filesQueued: number; pruned: number }> {
+  const { data, error } = await db().rpc('admin_cleanup_execute', { p_ids: ids, p_mode: mode, p_signature: signature, p_confirm: 'SUPPRIMER' });
+  fail(error);
+  const r = data as any;
+  return { filesQueued: r.files_queued ?? 0, pruned: r.pruned ?? 0 };
+}
+
+export interface PurgeLogEntry {
+  id: string;
+  kind: 'expiry' | 'cleanup' | 'drafts' | 'orphans';
+  gameId: string | null;
+  status: 'ok' | 'error';
+  details: Record<string, number> | null;
+  error: string | null;
+  createdAt: number;
+}
+
+export async function adminPurgeLog(): Promise<PurgeLogEntry[]> {
+  const { data, error } = await db().rpc('admin_purge_log', { p_limit: 30 });
+  fail(error);
+  return ((data as any[]) ?? []).map((l) => ({ id: l.id, kind: l.kind, gameId: l.game_id, status: l.status, details: l.details, error: l.error, createdAt: Date.parse(l.created_at) }));
+}
+
+export async function adminBacklog(): Promise<{ pending: number; failing: number; armed: boolean }> {
+  const [b, armed] = await Promise.all([db().rpc('admin_storage_backlog'), db().rpc('admin_purge_armed')]);
+  fail(b.error);
+  fail(armed.error);
+  const row = ((b.data as any[]) ?? [])[0] ?? { pending: 0, failing: 0 };
+  return { pending: row.pending, failing: row.failing, armed: armed.data === true };
+}
+
+/** Lance tout de suite la suppression des fichiers en attente (sinon la planification s'en charge). */
+export async function purgeFilesNow(): Promise<{ removed: number; failed: number }> {
+  const { data, error } = await db().functions.invoke('purge', { method: 'POST' });
+  if (error) throw new ApiError('PURGE', 'La suppression des fichiers sera reprise automatiquement.');
+  return { removed: data?.removed ?? 0, failed: data?.failed ?? 0 };
 }

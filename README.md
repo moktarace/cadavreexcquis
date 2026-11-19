@@ -50,7 +50,9 @@ Mise en place sur un projet Supabase :
 1. Authentication > Sign In / Providers : activer **Allow anonymous sign-ins**.
 2. Appliquer les migrations : soit coller les trois fichiers dans l'éditeur SQL du tableau de bord, dans l'ordre; soit ajouter `SUPABASE_DB_URL` dans `.env.local` (Project Settings > Database > Connection string) puis `npm run db:apply`.
 
-`npm run db:check` exécute ces migrations dans PGlite avec des rôles et une RLS simulés (43 vérifications : profil automatique, partie courante, auto-continuation refusée, case 4 finale, projet réutilisé ou d'autrui refusé, insertion directe refusée, projet publié figé, signalements, notifications, archives, pagination déterministe, états de lecture des réponses). Cela ne remplace pas un test sur la vraie base; les accès réellement concurrents et le stockage ne sont pas testés.
+`npm run db:check` exécute ces migrations dans PGlite avec des rôles et une RLS simulés (75 vérifications : profil automatique, partie courante, auto-continuation refusée, case 4 finale, projet réutilisé ou d'autrui refusé, insertion directe refusée, projet publié figé, signalements, notifications, archives, pagination déterministe, états de lecture des réponses). Cela ne remplace pas un test sur la vraie base; les accès réellement concurrents et le stockage ne sont pas testés.
+9. `0009_admin_moderation_expiry.sql` : administrateurs (`admins`, `is_admin()`), fenêtre de vie des thèmes (`starts_at`, `expires_at`, `purged_at`), dessins masqués (`hidden_kind`), signalements (`report_contribution`, blocage des signaleurs), fonctions `admin_*`, nettoyage manuel avec aperçu, file de suppression des fichiers (`storage_deletions`), journal (`purge_log`), purge automatique (`purge_expired_games`, **désarmée par défaut**) et blocage des publications sur un thème expiré (`GAME_EXPIRED`).
+
 
 ## Interface (refonte rétro-console)
 
@@ -117,8 +119,41 @@ Mise en service côté serveur (une fois) :
 3. `npx supabase secrets set --env-file supabase/.env.functions`.
 4. `npx supabase functions deploy dispatch --no-verify-jwt`.
 5. Tableau de bord > Database > Extensions : activer `pg_cron` et `pg_net`.
-6. Éditeur SQL : appliquer `0004_notifications.sql`, `0005_png_only.sql`, `0006_discovery.sql` `0007_progress.sql` puis `0008_replies.sql`, puis le contenu de `supabase/schedule.local.sql` (planifie l'envoi chaque minute, seulement s'il y a quelque chose à envoyer, et l'annonce du lundi).
+6. Éditeur SQL : appliquer `0004_notifications.sql`, `0005_png_only.sql`, `0006_discovery.sql`, `0007_progress.sql`, `0008_replies.sql` puis (voir la section suivante) `0009_admin_moderation_expiry.sql`, puis le contenu de `supabase/schedule.local.sql` (planifie l'envoi chaque minute, seulement s'il y a quelque chose à envoyer, et l'annonce du lundi).
 7. Rebuilder et déployer l'application avec `VITE_VAPID_PUBLIC_KEY`.
+
+## Administration, modération et expiration
+
+### Conservation des créations
+
+Un thème est actif sa première semaine (lundi 00:00), reste consultable et continuable la semaine suivante comme ancien thème, puis **toutes** ses contributions disparaissent le deuxième lundi à 00:00 (Europe/Paris, calculé en dates civiles : exact autour des changements d'heure), quelle que soit leur date de publication. Exemple : thème A actif le lundi 16 novembre 2026, thème B le 23, suppression du thème A le 30. Une continuation publiée le dimanche de la deuxième semaine disparaît donc avec le reste du thème. Les parties privées ou de test n'expirent jamais d'elles-mêmes.
+
+- La lecture s'arrête à l'échéance exacte (la vue `contribution_cards` filtre les thèmes expirés) et `publish_contribution` / `join_game` refusent tout thème expiré, même depuis un ancien onglet (`GAME_EXPIRED`) ; l'éditeur propose alors de rejoindre le thème de la semaine, sans jamais publier dans le mauvais thème. La purge physique, quelques minutes plus tard, supprime contributions, salles, états de lecture, signalements, notifications et brouillons techniques liés, puis met les fichiers du Storage en file de suppression.
+- Les dates sont affichées discrètement : « Les dessins de ce thème disparaîtront le lundi … » sur la carte du thème, en Lire, sur la page d'une histoire ou d'une semaine, et dans Mes dessins uniquement pendant la deuxième semaine d'un thème (avec un rappel pour exporter les BD terminées en PNG depuis leur page).
+- Concurrence : `publish_contribution` verrouille la partie en lecture puis la case parente ; la purge verrouille la partie en écriture avant de supprimer. Une publication acceptée juste avant l'échéance est supprimée avec le thème, une publication qui arrive après est refusée.
+- La purge de chaque thème est une transaction à part (tout ou rien), idempotente et journalisée (`purge_log`) ; une panne laisse le thème intact et il est repris au passage suivant. La file `storage_deletions` ne marque un fichier supprimé qu'après confirmation du Storage et le reprend en cas d'échec (10 essais). Un balayage quotidien met aussi en file les aperçus de plus d'un jour que plus aucune ligne ne référence.
+
+### Mise en service (rien n'est supprimé avant l'étape 6)
+
+1. Sauvegarder la base (export Supabase) : la migration masque immédiatement à la lecture les thèmes dont l'échéance est passée (par exemple tout ce qui date de plus de deux semaines).
+2. Appliquer `0009_admin_moderation_expiry.sql` (`npm run db:apply` ou éditeur SQL). Elle ne supprime rien et la purge est désarmée.
+3. Déployer la fonction de suppression des fichiers : `npx supabase functions deploy purge --no-verify-jwt` (elle réutilise le secret `DISPATCH_SECRET` et vérifie elle-même le secret ou le jeton d'un administrateur).
+4. Se déclarer administrateur : ouvrir Réglages, copier l'« Identifiant du compte », puis dans l'éditeur SQL `insert into public.admins (user_id) values ('<identifiant>');`. Rattacher une adresse e-mail au compte (Réglages) pour ne pas perdre l'accès. Personne n'est administrateur par défaut.
+5. Planifier (pg_cron et pg_net déjà activés) : `select public.schedule_expiry('https://<ref>.supabase.co/functions/v1/purge', '<DISPATCH_SECRET>');` (purge toutes les 5 minutes, balayage des orphelins à 03:17, envoi de la file de fichiers).
+6. Vérifier dans `/admin` > Échéances ce qui serait supprimé, puis **seulement alors** armer la suppression automatique : `select public.enable_expiry_purge();` (et `select public.enable_expiry_purge(false);` pour la désarmer).
+
+### Administration (`#/admin`)
+
+Réservée aux comptes de la table `admins`. Chaque fonction `admin_*` revérifie `is_admin()` côté serveur, la table `admins` n'a aucune politique d'accès, et le navigateur n'a jamais de clé `service_role` : la suppression des fichiers passe par l'Edge Function `purge`. Une condition React seule ne protège rien ; elle n'affiche que « Page introuvable » aux autres.
+
+- **Dessins** : liste paginée avec miniatures, filtres par thème/semaine, auteur (« Mes contributions »), statut (visible, signalé, masqué, retiré, emplacement neutre) et recherche (identifiant, auteur, thème) ; masquer et rétablir un ou plusieurs dessins.
+- **Signalements** : à examiner, retraits confirmés, écartés, abusifs, historique complet ; confirmer le retrait, rétablir, écarter, marquer abusif ou bloquer le signaleur.
+- **Nettoyage** : sélection précise, puis aperçu chiffré (dessins supprimés, emplacements neutres conservés, suites d'autres auteurs préservées, histoires, fichiers, signalements, états de lecture, notifications). « Seulement ces dessins » remplace une case qui a encore des suites par un emplacement neutre (image supprimée, structure conservée) et supprime vraiment les autres ; « Avec toutes leurs suites » est le seul mode qui supprime aussi les dessins des autres participants. La suppression exige de taper SUPPRIMER et que l'aperçu soit encore exact (`PLAN_CHANGED` sinon). Rien n'est jamais supprimé parce qu'il appartient à un thème ou à une histoire que vous avez commencée.
+- **Échéances** : prochaines suppressions par thème, état armé ou non, fichiers en attente, journal des opérations.
+
+### Signalements
+
+Publication immédiate, sans approbation. « Signaler ce dessin » (fiche d'une case et lecture d'une histoire) propose cinq motifs et une précision facultative. Le premier signalement valide masque le dessin au public (« Dessin temporairement masqué ») : l'image n'est plus exposée par la vue, les cases des autres auteurs et la structure sont conservées, la case ne peut plus être continuée directement (`PARENT_HIDDEN`) et rien n'est détruit. Interdit : signaler son propre dessin ou le même dessin deux fois ; limite de 10 signalements par heure et par joueur ; les signalements d'un compte bloqué sont enregistrés sans effet. Un dessin rétabli n'est pas remasqué par d'anciens signalements : trois nouveaux signalements ouverts, postérieurs au rétablissement, sont nécessaires. Limites connues : le bucket `previews` est public, donc un fichier masqué reste lisible par quelqu'un qui connaît déjà son URL jusqu'à sa suppression définitive ; des comptes anonymes en nombre peuvent contourner la limite par joueur (d'où le blocage manuel).
 
 ## Calendrier et tests
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DECK_ORDER, DECK_PAGE_SIZE } from '../domain/discovery';
-import { deckCount, deckPage, deckQuery, fetchAll, type Db } from './api';
+import { deckCount, deckPage, deckQuery, explain, fetchAll, type Db } from './api';
 
 type Call = [string, ...unknown[]];
 
@@ -36,10 +36,16 @@ describe('requêtes de découverte', () => {
     expect(names(calls)).not.toContain('or');
   });
 
+  it('ne propose jamais une case masquée à la continuation', () => {
+    const { client, calls } = fake();
+    deckQuery(client, q);
+    expect(calls).toContainEqual(['eq', 'hidden', false]);
+  });
+
   it('filtre par profondeur et par « sans suite » seulement à la demande', () => {
     const plain = fake();
     deckQuery(plain.client, q);
-    expect(plain.calls.filter((c) => c[0] === 'eq').map((c) => c[1])).toEqual(['room_id']);
+    expect(plain.calls.filter((c) => c[0] === 'eq').map((c) => c[1])).toEqual(['room_id', 'hidden']);
 
     const filtered = fake();
     deckQuery(filtered.client, { ...q, depth: 2, onlyOpen: true });
@@ -88,5 +94,13 @@ describe('lecture exhaustive', () => {
 
   it('remonte l’erreur du serveur au lieu de renvoyer un résultat partiel', async () => {
     await expect(fetchAll(() => Promise.resolve({ data: null, error: { message: 'boom' } }))).rejects.toThrow('boom');
+  });
+});
+
+describe('messages d’erreur du serveur', () => {
+  it('explique clairement un thème expiré et une case masquée', () => {
+    expect(explain({ message: 'GAME_EXPIRED' })).toMatch(/période est terminée/);
+    expect(explain({ message: 'PARENT_HIDDEN' })).toMatch(/masqué/);
+    expect(explain({ message: 'ALREADY_REPORTED' })).toMatch(/déjà signalé/);
   });
 });

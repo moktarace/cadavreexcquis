@@ -10,7 +10,7 @@ await db.exec(`
   create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
   create schema storage;
   create table storage.buckets(id text primary key, name text, public bool, file_size_limit bigint, allowed_mime_types text[]);
-  create table storage.objects(id uuid default gen_random_uuid(), bucket_id text, name text, owner uuid);
+  create table storage.objects(id uuid default gen_random_uuid(), bucket_id text, name text, owner uuid, created_at timestamptz default now());
   alter table storage.objects enable row level security;
   create function storage.foldername(name text) returns text[] language sql as $$ select string_to_array(name, '/') $$;
   grant usage on schema auth, storage to authenticated, anon;
@@ -122,10 +122,8 @@ await check('brouillon de bob invisible pour alice', async () => {
   const rows = await as(users.alice, "select id from drawing_projects where owner_id=$1 and status='draft'", [users.bob]);
   if (rows.length) throw new Error('visible');
 });
-await check('signalement', async () => {
-  await as(users.bob, 'insert into reports(contribution_id, reporter_id, reason) values ($1,$2,$3)', [root, users.bob, 'test']);
-  await expectErr('row-level security', () => as(users.bob, 'insert into reports(contribution_id, reporter_id, reason) values ($1,$2,$3)', [root, users.alice, 'usurpation']));
-});
+await check('signalement: insertion directe refusée (passer par report_contribution)', () =>
+  expectErr('row-level security', () => as(users.bob, 'insert into reports(contribution_id, reporter_id, reason, category) values ($1,$2,$3,$4)', [root, users.bob, 'test', 'spam'])));
 await check('publier sans session refusé', () => expectErr('permission', () => as(null, 'select publish_contribution($1,$2,$3,$4)', [aliceRoom, null, root, root])));
 // ───────────── Notifications ─────────────
 const pending = async (u) => (await db.query("select kind, group_key, count, payload from notifications where user_id=$1 and sent_at is null order by kind", [users[u]])).rows;
@@ -227,6 +225,7 @@ let pastA, pastB, privateGame, storyEnd;
 await check('archives: histoires et dessins des autres parties publiques seulement', async () => {
   const games = (await db.query('select id from weekly_games where not is_private and iso_year=2026 and iso_week in (1,2) order by iso_week')).rows;
   pastA = games[0].id; pastB = games[1].id;
+  await db.query("update weekly_games set expires_at = now() + interval '1 day' where id in ($1,$2)", [pastA, pastB]);
   privateGame = (await db.query("insert into weekly_games(iso_year, iso_week, theme_id, is_private) values (2020,10,(select id from themes limit 1),true) returning id")).rows[0].id;
   const ra = await room(pastA);
   const a1 = await plant(pastA, ra, 'alice', 1, null);
@@ -348,4 +347,350 @@ await check('réponses: le rattrapage de la migration marque les réponses exist
     if (rows.length) throw new Error(`${u}: ${rows.length} non lues après rattrapage`);
   }
 });
+
+// ───────────── Administration, modération, expiration (0009) ─────────────
+for (const n of ['ada', 'bea', 'cyd', 'dex', 'eli', 'fay', 'gus', 'adm']) users[n] = (await db.query('insert into auth.users default values returning id')).rows[0].id;
+const cardOf = async (u, id) => (await as(users[u], 'select hidden, hidden_kind, preview_path from contribution_cards where id=$1', [id]))[0];
+const report = (u, id, category = 'offensive', details = null) => as(users[u], 'select report_contribution($1,$2,$3) r', [id, category, details]).then((r) => r[0].r);
+const statusOf = async (id) => (await db.query('select status, hidden_kind, restored_at from contributions where id=$1', [id])).rows[0];
+
+await check('fenêtre d’un thème: lundi 00:00 Paris, suppression le deuxième lundi suivant (exemple du cahier des charges)', async () => {
+  const [w] = (await db.query('select starts_at, expires_at from game_window(2026, 47)')).rows;
+  if (w.starts_at.toISOString() !== '2026-11-15T23:00:00.000Z') throw new Error(`début ${w.starts_at.toISOString()}`);
+  if (w.expires_at.toISOString() !== '2026-11-29T23:00:00.000Z') throw new Error(`fin ${w.expires_at.toISOString()}`);
+});
+await check('fenêtre d’un thème: exacte autour des changements d’heure', async () => {
+  const cases = [
+    [2026, 42, '2026-10-11T22:00:00.000Z', '2026-10-25T23:00:00.000Z'],   // fin de l’heure d’été le 25/10
+    [2026, 43, '2026-10-18T22:00:00.000Z', '2026-11-01T23:00:00.000Z'],
+    [2027, 11, '2027-03-14T23:00:00.000Z', '2027-03-28T22:00:00.000Z'],   // début de l’heure d’été le 28/03
+    [2027, 12, '2027-03-21T23:00:00.000Z', '2027-04-04T22:00:00.000Z'],
+    [2026, 53, '2026-12-27T23:00:00.000Z', '2027-01-10T23:00:00.000Z'],   // semaine 53 → fin à cheval sur l’année
+  ];
+  for (const [y, w, start, end] of cases) {
+    const [r] = (await db.query('select starts_at, expires_at from game_window($1, $2)', [y, w])).rows;
+    if (r.starts_at.toISOString() !== start || r.expires_at.toISOString() !== end) throw new Error(`${y}-${w}: ${r.starts_at.toISOString()} → ${r.expires_at.toISOString()}`);
+  }
+});
+await check('les parties publiques existantes reçoivent leur fenêtre, pas les parties privées', async () => {
+  const [a] = (await db.query('select count(*)::int n from weekly_games where not is_private and (starts_at is null or expires_at is null)')).rows;
+  const [b] = (await db.query('select count(*)::int n from weekly_games where is_private and expires_at is not null')).rows;
+  if (a.n !== 0 || b.n !== 0) throw new Error(`${a.n} ${b.n}`);
+});
+
+let modRoot, modTwo, modThree;
+await check('un dessin publié est immédiatement visible', async () => {
+  modRoot = await pub('ada', aliceRoom, null);
+  const c = await cardOf('bea', modRoot);
+  if (c.hidden || !c.preview_path) throw new Error(JSON.stringify(c));
+});
+await check('signalement: motif invalide, auto-signalement et doublon refusés', async () => {
+  await expectErr('INVALID_CATEGORY', () => report('bea', modRoot, 'nimporte'));
+  await expectErr('CANNOT_REPORT_OWN', () => report('ada', modRoot));
+  await expectErr('NOT_AUTHENTICATED', () => as(null, 'select report_contribution($1,$2,$3)', [modRoot, 'spam', null]).catch((e) => { throw new Error('NOT_AUTHENTICATED ' + e.message); }));
+});
+await check('un dessin signalé est masqué dès le premier signalement valide, sans image publique', async () => {
+  modTwo = await pub('bea', aliceRoom, modRoot);
+  modThree = await pub('cyd', aliceRoom, modTwo);
+  if (await report('cyd', modTwo, 'spam', 'pub') !== 'hidden') throw new Error('non masqué');
+  const c = await cardOf('dex', modTwo);
+  if (!c.hidden || c.hidden_kind !== 'review' || c.preview_path !== null) throw new Error(JSON.stringify(c));
+  await expectErr('ALREADY_REPORTED', () => report('cyd', modTwo));
+  const [{ n }] = (await db.query('select count(*)::int n from reports where contribution_id=$1', [modTwo])).rows;
+  if (n !== 1) throw new Error(`${n} signalements`);
+});
+await check('une case masquée garde la structure: descendants conservés, chemin lisible avec un emplacement neutre', async () => {
+  const path = await as(users.dex, 'select id, hidden, preview_path from contribution_path($1)', [modThree]);
+  if (path.map((r) => r.id).join() !== [modRoot, modTwo, modThree].join()) throw new Error('chemin');
+  if (path[1].hidden !== true || path[1].preview_path !== null || path[0].preview_path === null || path[2].preview_path === null) throw new Error('masquage');
+  const sub = await as(users.dex, 'select id from contribution_subtree($1)', [modRoot]);
+  if (sub.length !== 2) throw new Error(`${sub.length}`);
+});
+await check('on ne peut pas continuer directement une case masquée', () =>
+  expectErr('PARENT_HIDDEN', () => pub('dex', aliceRoom, modTwo)));
+await check('l’image d’une case masquée n’est plus lisible par les autres joueurs', async () => {
+  const rows = await as(users.dex, 'select path from drawing_assets a where exists (select 1 from contributions c where c.preview_asset = a.id and c.id = $1)', [modTwo]);
+  if (rows.length) throw new Error('chemin visible');
+});
+await check('personne n’accède aux signalements, aux administrateurs ni aux journaux', async () => {
+  if ((await as(users.dex, 'select * from reports')).length) throw new Error('signalements lisibles');
+  if ((await as(users.dex, 'select * from admins')).length) throw new Error('admins lisibles');
+  if ((await as(users.dex, 'select * from storage_deletions')).length) throw new Error('file lisible');
+  await expectErr('row-level security', () => as(users.dex, 'insert into admins(user_id) values ($1)', [users.dex]));
+});
+await check('un utilisateur sans droits ne peut déclencher aucune opération d’administration', async () => {
+  if ((await as(users.dex, 'select is_admin() a'))[0].a !== false) throw new Error('admin');
+  for (const q of [
+    ['select * from admin_contributions()', []],
+    ['select * from admin_reports()', []],
+    ['select * from admin_games()', []],
+    ['select admin_set_hidden($1::uuid[], false)', [`{${modTwo}}`]],
+    ['select admin_cleanup_preview($1::uuid[], $2)', [`{${modTwo}}`, 'selection']],
+    ['select admin_cleanup_execute($1::uuid[], $2, $3, $4)', [`{${modTwo}}`, 'selection', 'x', 'SUPPRIMER']],
+    ['select * from admin_purge_log()', []],
+  ]) await expectErr('FORBIDDEN', () => as(users.dex, q[0], q[1]));
+  for (const f of ['purge_expired_games()', 'enable_expiry_purge()', "claim_storage_deletions(10)", 'purge_stale_drafts()'])
+    await expectErr('permission denied', () => as(users.dex, `select ${f}`));
+  await expectErr('permission denied', () => as(users.dex, 'select * from cleanup_plan($1::uuid[], $2)', [`{${modTwo}}`, 'selection']));
+});
+await check('l’administrateur voit les dessins masqués et leurs signalements, filtrables', async () => {
+  await db.query('insert into admins(user_id) values ($1)', [users.adm]);
+  const hiddenOnes = await as(users.adm, "select id, preview_path, open_reports from admin_contributions(null, null, 'review')");
+  if (!hiddenOnes.some((r) => r.id === modTwo && r.preview_path && r.open_reports === 1)) throw new Error(JSON.stringify(hiddenOnes));
+  const byAuthor = await as(users.adm, 'select id from admin_contributions(null, $1)', [users.bea]);
+  if (byAuthor.length !== 1 || byAuthor[0].id !== modTwo) throw new Error('filtre auteur');
+  const bySearch = await as(users.adm, 'select id from admin_contributions(null, null, null, $1)', [modThree.slice(0, 8)]);
+  if (bySearch.length !== 1 || bySearch[0].id !== modThree) throw new Error('recherche');
+  const reps = await as(users.adm, "select category, details, status, reporter_reports from admin_reports('open')");
+  if (!reps.some((r) => r.category === 'spam' && r.details === 'pub')) throw new Error('signalements');
+});
+await check('l’administrateur rétablit un dessin: image et continuation reviennent, signalements clos', async () => {
+  await as(users.adm, 'select admin_set_hidden($1::uuid[], false)', [`{${modTwo}}`]);
+  const c = await cardOf('dex', modTwo);
+  if (c.hidden || !c.preview_path) throw new Error(JSON.stringify(c));
+  const [{ status }] = (await db.query('select status from reports where contribution_id=$1', [modTwo])).rows;
+  if (status !== 'dismissed') throw new Error(status);
+  const again = await pub('dex', aliceRoom, modTwo);
+  if (!again) throw new Error('continuation refusée');
+});
+await check('un ancien signalement ne remasque pas un dessin rétabli; trois nouveaux signalements, si', async () => {
+  const s = await statusOf(modTwo);
+  if (s.status !== 'published') throw new Error('remasqué');
+  if (await report('dex', modTwo) !== 'recorded') throw new Error('masqué trop tôt (1)');
+  if (await report('eli', modTwo) !== 'recorded') throw new Error('masqué trop tôt (2)');
+  if ((await statusOf(modTwo)).status !== 'published') throw new Error('remasqué à 2');
+  if (await report('fay', modTwo, 'hateful') !== 'hidden') throw new Error('devrait être masqué au troisième');
+});
+await check('l’administrateur confirme le retrait: le dessin reste masqué, rien n’est détruit', async () => {
+  await as(users.adm, 'select admin_set_hidden($1::uuid[], true)', [`{${modTwo}}`]);
+  const s = await statusOf(modTwo);
+  if (s.status !== 'hidden' || s.hidden_kind !== 'removed') throw new Error(JSON.stringify(s));
+  const [{ n }] = (await db.query("select count(*)::int n from reports where contribution_id=$1 and status='upheld'", [modTwo])).rows;
+  if (n !== 3) throw new Error(`${n} upheld`);
+  const [{ files }] = (await db.query('select count(*)::int files from drawing_assets a join contributions c on c.preview_asset = a.id where c.id=$1', [modTwo])).rows;
+  if (files !== 1) throw new Error('fichier supprimé par erreur');
+});
+await check('signalements abusifs: limite horaire et blocage du signaleur', async () => {
+  const targets = [];
+  for (let i = 0; i < 11; i++) targets.push(await plant(game, aliceRoom, 'ada', 1, null));
+  for (let i = 0; i < 10; i++) await report('gus', targets[i], 'spam');
+  await expectErr('REPORT_RATE_LIMITED', () => report('gus', targets[10], 'spam'));
+  const [rep] = await as(users.adm, "select report_id from admin_reports('open') where reporter_id = $1 limit 1", [users.gus]);
+  await as(users.adm, 'select admin_review_report($1, $2, true)', [rep.report_id, 'abusive']);
+  const [{ blocked }] = (await db.query('select exists (select 1 from report_blocks where user_id=$1) blocked', [users.gus])).rows;
+  if (!blocked) throw new Error('non bloqué');
+  const victim = await plant(game, aliceRoom, 'ada', 1, null);
+  await db.query("delete from reports where reporter_id=$1 and id <> $2", [users.gus, rep.report_id]);
+  if (await report('gus', victim, 'spam') !== 'recorded') throw new Error('un compte bloqué ne doit pas masquer');
+  if ((await statusOf(victim)).status !== 'published') throw new Error('masqué');
+  // le seul signalement ouvert écarté comme abusif rétablit le dessin masqué en attente d'examen
+  const only = await plant(game, aliceRoom, 'ada', 1, null);
+  await report('fay', only, 'other');
+  const [r2] = await as(users.adm, "select report_id from admin_reports('open') where contribution_id=$1", [only]);
+  await as(users.adm, 'select admin_review_report($1, $2, false)', [r2.report_id, 'dismissed']);
+  if ((await statusOf(only)).status !== 'published') throw new Error('non rétabli');
+});
+
+// Thèmes de test: A (semaine « 10 ») puis B (semaine « 11 ») dans un futur lointain.
+let gA, gB, rA, rB, a1, a2, a3, b1, notifBefore;
+const themeId = (await db.query('select id from themes limit 1')).rows[0].id;
+// Les parties des tests précédents ne doivent pas être emportées par l'horloge simulée de 2031.
+await db.query('update weekly_games set expires_at = null where iso_year < 2031 and not is_private');
+const mkGame = async (week) => (await db.query('insert into weekly_games(iso_year, iso_week, theme_id) values (2031,$1,$2) returning id', [week, themeId])).rows[0].id;
+const stored = async (userId, label) => { await db.query("insert into storage.objects(bucket_id, name) select 'previews', path from drawing_assets where path like $1 || '/%'", [userId]); return label; };
+await check('arrivée du thème B: le thème A reste intact, consultable et continuable (deuxième semaine)', async () => {
+  gA = await mkGame(10); gB = await mkGame(11);
+  rA = await room(gA); rB = await room(gB);
+  a1 = await plant(gA, rA, 'alice', 1, null);
+  a2 = await pub('bob', rA, a1);                     // notifie alice (abonnée) → notification en file
+  notifBefore = (await db.query("select count(*)::int n from notifications where payload->>'url' like '%' || $1", [a2])).rows[0].n;
+  b1 = await plant(gB, rB, 'chloe', 1, null);
+  await db.query('select enable_expiry_purge()');
+  const [bw] = (await db.query('select starts_at from weekly_games where id=$1', [gB])).rows;
+  const res = (await db.query('select purge_expired_games($1) r', [bw.starts_at])).rows[0].r;
+  if (res.purged !== 0) throw new Error(JSON.stringify(res));
+  const read = await as(users.dex, 'select id from contribution_cards where game_id=$1', [gA]);
+  if (read.length !== 2) throw new Error(`${read.length} lisibles`);
+  a3 = await pub('chloe', rA, a2);                    // continuation d’une ancienne histoire
+  if (!a3) throw new Error('continuation refusée');
+});
+await check('une continuation hérite de l’expiration du thème d’origine, quelle que soit sa date de publication', async () => {
+  const [r] = (await db.query('select g.expires_at, c.published_at from contributions c join weekly_games g on g.id=c.game_id where c.id=$1', [a3])).rows;
+  const [w] = (await db.query('select expires_at from game_window(2031, 10)')).rows;
+  if (r.expires_at.toISOString() !== w.expires_at.toISOString()) throw new Error('échéance différente');
+});
+await check('la purge est désarmée tant qu’elle n’est pas activée explicitement', async () => {
+  await db.query('select enable_expiry_purge(false)');
+  const [gw] = (await db.query('select expires_at from weekly_games where id=$1', [gA])).rows;
+  const res = (await db.query('select purge_expired_games($1) r', [new Date(gw.expires_at.getTime() + 1000)])).rows[0].r;
+  const [{ n }] = (await db.query('select count(*)::int n from contributions where game_id=$1', [gA])).rows;
+  if (res.enabled !== false || n !== 3) throw new Error(JSON.stringify(res));
+  await db.query('select enable_expiry_purge(true)');
+});
+await check('à l’échéance, un thème expiré disparaît de la lecture et refuse toute publication, même ancien onglet', async () => {
+  await db.query("update weekly_games set expires_at = now() - interval '1 second' where id=$1", [gA]);
+  const read = await as(users.dex, 'select id from contribution_cards where game_id=$1', [gA]);
+  if (read.length) throw new Error('encore lisible');
+  await expectErr('GAME_EXPIRED', () => pub('dex', rA, a3));
+  await expectErr('GAME_EXPIRED', () => as(users.dex, 'select join_game($1)', [gA]));
+  await expectErr('CONTRIBUTION_NOT_FOUND', () => report('dex', a2));
+  await db.query("update weekly_games set expires_at = (select expires_at from game_window(2031, 10)) where id=$1", [gA]);
+});
+
+// Fichiers: un objet Storage par dessin publié, comme dans Supabase.
+const drain = async ({ failFirst = false } = {}) => {
+  let removed = 0;
+  for (;;) {
+    const claimed = (await db.query('select * from claim_storage_deletions(50)')).rows;
+    if (!claimed.length) return removed;
+    const done = [];
+    for (const [i, c] of claimed.entries()) {
+      if (failFirst && i === 0) { await db.query('select fail_storage_deletion($1, $2)', [c.id, 'réseau']); failFirst = false; continue; }
+      await db.query("delete from storage.objects where bucket_id=$1 and name=$2", [c.bucket, c.path]);
+      done.push(c.id); removed++;
+    }
+    await db.query('select complete_storage_deletions($1::uuid[])', [`{${done.join(',')}}`]);
+    if (!done.length) return removed;
+  }
+};
+await check('suppression interrompue (échec en cours de route) puis reprise: rien de partiel, journal d’erreur, puis succès', async () => {
+  for (const id of [a1, a2, a3, b1]) await db.query("insert into storage.objects(bucket_id, name) select 'previews', a.path from drawing_assets a join contributions c on c.preview_asset=a.id where c.id=$1", [id]);
+  await db.query("create function boom() returns trigger language plpgsql as $$ begin raise exception 'panne simulée'; end $$");
+  await db.query('create trigger boom before delete on rooms for each row execute function boom()');
+  const [gw] = (await db.query('select expires_at from weekly_games where id=$1', [gA])).rows;
+  const at = new Date(gw.expires_at.getTime() + 1000);
+  const res = (await db.query('select purge_expired_games($1) r', [at])).rows[0].r;
+  const [{ n }] = (await db.query('select count(*)::int n from contributions where game_id=$1', [gA])).rows;
+  const [{ q }] = (await db.query("select count(*)::int q from storage_deletions where reason='expiry'")).rows;
+  if (res.errors !== 1 || n !== 3 || q !== 0) throw new Error(`${JSON.stringify(res)} ${n} ${q}`);
+  const [log] = (await db.query("select status, error from purge_log where game_id=$1 order by created_at desc limit 1", [gA])).rows;
+  if (log.status !== 'error' || !log.error.includes('panne')) throw new Error(JSON.stringify(log));
+  await db.query('drop trigger boom on rooms');
+  const again = (await db.query('select purge_expired_games($1) r', [at])).rows[0].r;
+  if (again.purged !== 1 || again.errors !== 0) throw new Error(JSON.stringify(again));
+});
+await check('après l’expiration: seul le thème A disparaît (contributions, fichiers, notifications, salles), pas le thème B', async () => {
+  const [a] = (await db.query('select count(*)::int n from contributions where game_id=$1', [gA])).rows;
+  const [b] = (await db.query('select count(*)::int n from contributions where game_id=$1', [gB])).rows;
+  const [assets] = (await db.query("select count(*)::int n from drawing_assets where path in (select path from storage_deletions)")).rows;
+  const [rooms] = (await db.query('select count(*)::int n from rooms where game_id=$1', [gA])).rows;
+  const [roomB] = (await db.query('select count(*)::int n from rooms where game_id=$1', [gB])).rows;
+  if (a.n !== 0 || b.n !== 1 || assets.n !== 0 || rooms.n !== 0 || roomB.n !== 1) throw new Error(JSON.stringify({ a, b, assets, rooms, roomB }));
+  if (notifBefore < 1) throw new Error('précondition: une notification existait');
+  const [notif] = (await db.query("select count(*)::int n from notifications where payload->>'url' like '%' || $1 or payload->>'url' like '%' || $2", [a2, a3])).rows;
+  if (notif.n !== 0) throw new Error('notifications orphelines');
+  const [pg] = (await db.query('select purged_at from weekly_games where id=$1', [gA])).rows;
+  if (!pg.purged_at) throw new Error('purged_at');
+});
+await check('aucun fichier orphelin dans Storage après la purge et la reprise de la file (échec partiel inclus)', async () => {
+  const [{ before }] = (await db.query("select count(*)::int before from storage.objects where name in (select path from storage_deletions)")).rows;
+  if (before < 3) throw new Error(`${before} fichiers en attente`);
+  const removed = await drain({ failFirst: true });
+  if (removed !== before) throw new Error(`${removed}/${before}`);
+  const [{ left }] = (await db.query("select count(*)::int left from storage.objects where name in (select path from storage_deletions)")).rows;
+  const [{ pending }] = (await db.query('select count(*)::int pending from storage_deletions where deleted_at is null')).rows;
+  const [{ kept }] = (await db.query("select count(*)::int kept from storage.objects o where exists (select 1 from drawing_assets a join contributions c on c.preview_asset=a.id where a.path=o.name and c.id=$1)", [b1])).rows;
+  if (left !== 0 || pending !== 0 || kept !== 1) throw new Error(JSON.stringify({ left, pending, kept }));
+});
+await check('la tâche exécutée deux fois ne supprime rien de plus et ne touche pas les autres semaines', async () => {
+  const [gw] = (await db.query('select expires_at from weekly_games where id=$1', [gA])).rows;
+  const at = new Date(gw.expires_at.getTime() + 1000);
+  const [before] = (await db.query('select count(*)::int n from contributions')).rows;
+  const r2 = (await db.query('select purge_expired_games($1) r', [at])).rows[0].r;
+  const [after] = (await db.query('select count(*)::int n from contributions')).rows;
+  const [logs] = (await db.query("select count(*)::int n from purge_log where kind='expiry' and game_id=$1 and status='ok'", [gA])).rows;
+  const [queued] = (await db.query('select count(*)::int n from storage_deletions where deleted_at is null')).rows;
+  if (r2.purged !== 0 || before.n !== after.n || logs.n !== 1 || queued.n !== 0) throw new Error(JSON.stringify({ r2, before, after, logs, queued }));
+  const [b] = (await db.query('select count(*)::int n from contributions where game_id=$1', [gB])).rows;
+  if (b.n !== 1) throw new Error('thème B touché');
+});
+await check('une publication sur un thème tout juste expiré est refusée, la purge supprime ce qui a été accepté avant', async () => {
+  const g = await mkGame(12);
+  const r = await room(g);
+  const root = await plant(g, r, 'alice', 1, null);
+  const accepted = await pub('bob', r, root);                    // acceptée avant l’échéance
+  await db.query("update weekly_games set expires_at = now() - interval '1 second' where id=$1", [g]);
+  await expectErr('GAME_EXPIRED', () => pub('chloe', r, accepted));   // arrivée après l’échéance
+  await db.query('select purge_expired_games(clock_timestamp())');
+  const [{ n }] = (await db.query('select count(*)::int n from contributions where game_id=$1', [g])).rows;
+  if (n !== 0) throw new Error(`${n} restantes`);
+});
+await check('fichiers orphelins: seuls les aperçus anciens et non référencés sont mis en file', async () => {
+  await db.query("insert into storage.objects(bucket_id, name, created_at) values ('previews', 'x/orphan-old.png', now() - interval '3 days'), ('previews', 'x/orphan-new.png', now())");
+  await db.query("insert into storage.objects(bucket_id, name, created_at) select 'previews', path, now() - interval '3 days' from drawing_assets where path like $1 || '/%' limit 1", [users.ada]);
+  const n = (await db.query('select queue_orphan_previews() n')).rows[0].n;
+  const [q] = (await db.query("select array_agg(path order by path) p from storage_deletions where reason='orphan'")).rows;
+  if (n !== 1 || q.p.join() !== 'x/orphan-old.png') throw new Error(`${n} ${q.p}`);
+  await drain();
+});
+
+// Nettoyage manuel: aperçu, confirmation, emplacements neutres.
+let t1, t2, t3, t4, t5;
+await check('nettoyage: aperçu précis, sans rien supprimer, avec les suites des autres joueurs préservées', async () => {
+  const g = await mkGame(20); const r = await room(g);
+  t1 = await plant(g, r, 'adm', 1, null);
+  t2 = await plant(g, r, 'bob', 2, t1);
+  t3 = await plant(g, r, 'chloe', 2, t1);
+  t4 = await plant(g, r, 'alice', 3, t2);
+  t5 = await plant(g, r, 'adm', 3, t3);
+  const mine = await as(users.adm, 'select id from admin_contributions(null, $1)', [users.adm]);
+  if (!mine.some((x) => x.id === t1) || mine.some((x) => x.id === t2)) throw new Error('filtre mes contributions');
+  const [p] = await as(users.adm, "select admin_cleanup_preview($1::uuid[], 'selection') p", [`{${t1}}`]);
+  const pv = p.p;
+  if (pv.tombstone_rows !== 1 || pv.delete_rows !== 0 || pv.children_kept !== 2 || pv.files !== 1 || pv.stories !== 1 || pv.cascaded_rows !== 0) throw new Error(JSON.stringify(pv));
+  const [{ n }] = (await db.query('select count(*)::int n from contributions where game_id=$1', [g])).rows;
+  if (n !== 5) throw new Error('l’aperçu a supprimé');
+});
+await check('nettoyage: confirmation explicite et signature de l’aperçu exigées', async () => {
+  const pv = (await as(users.adm, "select admin_cleanup_preview($1::uuid[], 'selection') p", [`{${t1}}`]))[0].p;
+  await expectErr('CONFIRMATION_REQUIRED', () => as(users.adm, 'select admin_cleanup_execute($1::uuid[], $2, $3, $4)', [`{${t1}}`, 'selection', pv.signature, 'oui']));
+  await expectErr('PLAN_CHANGED', () => as(users.adm, 'select admin_cleanup_execute($1::uuid[], $2, $3, $4)', [`{${t1}}`, 'selection', 'obsolete', 'SUPPRIMER']));
+  const [{ n }] = (await db.query('select count(*)::int n from contributions where id=$1', [t1])).rows;
+  if (n !== 1) throw new Error('supprimé sans confirmation');
+});
+await check('nettoyage: la case choisie devient un emplacement neutre, les suites d’autres auteurs sont préservées', async () => {
+  const pv = (await as(users.adm, "select admin_cleanup_preview($1::uuid[], 'selection') p", [`{${t1}}`]))[0].p;
+  const res = (await as(users.adm, 'select admin_cleanup_execute($1::uuid[], $2, $3, $4) r', [`{${t1}}`, 'selection', pv.signature, 'SUPPRIMER']))[0].r;
+  if (res.files_queued !== 1) throw new Error(JSON.stringify(res));
+  const c = await cardOf('dex', t1);
+  if (!c.hidden || c.hidden_kind !== 'deleted' || c.preview_path !== null) throw new Error(JSON.stringify(c));
+  const rest = await as(users.dex, 'select id from contribution_cards where id = any($1::uuid[])', [`{${t2},${t3},${t4},${t5}}`]);
+  if (rest.length !== 4) throw new Error('suites perdues');
+  const [{ n }] = (await db.query("select count(*)::int n from storage_deletions where reason='cleanup' and deleted_at is null")).rows;
+  if (n !== 1) throw new Error(`${n} fichiers en file`);
+  const tombRoom = (await db.query('select room_id from contributions where id=$1', [t1])).rows[0].room_id;
+  await expectErr('PARENT_HIDDEN', () => pub('dex', tombRoom, t1));
+  await drain();
+});
+await check('nettoyage: supprimer la dernière suite retire aussi l’emplacement neutre devenu inutile', async () => {
+  const ids = `{${t2},${t3},${t4},${t5}}`;
+  const pv = (await as(users.adm, "select admin_cleanup_preview($1::uuid[], 'selection') p", [ids]))[0].p;
+  if (pv.delete_rows !== 4 || pv.tombstone_rows !== 0) throw new Error(JSON.stringify(pv));
+  const res = (await as(users.adm, 'select admin_cleanup_execute($1::uuid[], $2, $3, $4) r', [ids, 'selection', pv.signature, 'SUPPRIMER']))[0].r;
+  const [{ n }] = (await db.query('select count(*)::int n from contributions where id = any($1::uuid[])', [`{${t1},${t2},${t3},${t4},${t5}}`])).rows;
+  if (n !== 0 || res.pruned !== 1) throw new Error(`${n} ${JSON.stringify(res)}`);
+  await drain();
+});
+await check('nettoyage d’une histoire entière: réservé au mode « story », avec l’aperçu des autres auteurs touchés', async () => {
+  const g = await mkGame(21); const r = await room(g);
+  const s1 = await plant(g, r, 'adm', 1, null);
+  const s2 = await plant(g, r, 'bob', 2, s1);
+  const s3 = await plant(g, r, 'chloe', 3, s2);
+  const sel = (await as(users.adm, "select admin_cleanup_preview($1::uuid[], 'selection') p", [`{${s1}}`]))[0].p;
+  if (sel.tombstone_rows !== 1 || sel.cascaded_rows !== 0) throw new Error('la sélection simple ne doit pas supprimer les suites');
+  const pv = (await as(users.adm, "select admin_cleanup_preview($1::uuid[], 'story') p", [`{${s1}}`]))[0].p;
+  if (pv.delete_rows !== 3 || pv.cascaded_rows !== 2 || pv.authors !== 3 || pv.files !== 3) throw new Error(JSON.stringify(pv));
+  await as(users.adm, 'select admin_cleanup_execute($1::uuid[], $2, $3, $4)', [`{${s1}}`, 'story', pv.signature, 'SUPPRIMER']);
+  const [{ n }] = (await db.query('select count(*)::int n from contributions where game_id=$1', [g])).rows;
+  if (n !== 0) throw new Error(`${n}`);
+  await drain();
+});
+await check('journal: chaque opération laisse une trace minimale', async () => {
+  const logs = await as(users.adm, 'select kind, status from admin_purge_log(100)');
+  const kinds = new Set(logs.map((l) => `${l.kind}:${l.status}`));
+  for (const k of ['expiry:ok', 'expiry:error', 'cleanup:ok', 'orphans:ok']) if (!kinds.has(k)) throw new Error(`manque ${k}`);
+  const [b] = await as(users.adm, 'select pending from admin_storage_backlog()');
+  if (b.pending !== 0) throw new Error('file non vide');
+});
+
 console.log(results.join('\n'));

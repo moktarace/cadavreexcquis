@@ -1,3 +1,5 @@
+import type { HiddenKind } from './moderation';
+
 export type CaseNumber = 1 | 2 | 3 | 4;
 
 /** Contribution publiée telle que lue depuis la vue `contribution_cards`. */
@@ -12,12 +14,16 @@ export interface Card {
   previewUrl: string;
   publishedAt: number;
   childCount: number;
+  /** Dessin masqué par la modération: l'image est remplacée par un emplacement neutre. */
+  hidden?: boolean;
+  hiddenKind?: HiddenKind | null;
 }
 
 export const FINAL_CASE = 4;
 
 /** Raison pour laquelle un joueur ne peut pas continuer une case, ou null s'il le peut. */
 export function cannotContinue(card: Card, userId: string | null): string | null {
+  if (card.hidden) return 'Ce dessin est masqué : on ne peut pas le continuer pour le moment.';
   if (card.caseNumber >= FINAL_CASE) return 'Cette version de l’histoire est terminée.';
   if (card.authorId === userId) return 'Tu ne peux pas continuer ton propre dessin.';
   return null;

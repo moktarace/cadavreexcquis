@@ -6,6 +6,7 @@ import { isReplyTo } from '../domain/discoveries';
 import { PixelIcon, StoryThumbnail, ToyButton, ToyCard } from '../ui';
 import { Async, PageFrame, plural, useAsync } from './shared';
 import { CasePage } from './Browse';
+import { cardAlt } from '../domain/moderation';
 
 /** « Voici ce que j'avais dessiné, et voici ce que quelqu'un d'autre en a fait. » */
 export function ReplyPage({ id }: { id: string }) {
@@ -41,7 +42,7 @@ export function ReplyPage({ id }: { id: string }) {
                 </figure>
                 <PixelIcon name="play" size={28} className="reply__arrow" />
                 <figure>
-                  <img src={reply.previewUrl} width={320} height={240} alt={`Case ${reply.caseNumber} de ${reply.authorName}`} />
+                  <img src={reply.previewUrl} width={320} height={240} alt={cardAlt(reply)} />
                   <figcaption className="thread__caption">{final ? 'La fin' : 'Sa suite'} · case {reply.caseNumber} · {reply.authorName}</figcaption>
                 </figure>
               </div>

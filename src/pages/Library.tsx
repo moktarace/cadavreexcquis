@@ -8,7 +8,9 @@ import { mineMood, missingCardIds, pairDiscoveries, parentsWithNews, suiteLabel,
 import type { Progress } from '../domain/play';
 import { EmptyState, Mascot, PixelIcon, StoryThumbnail, ToyButton, ToyCard, ToySpinner } from '../ui';
 import { Async, CardLink, Loading, PageFrame, plural, useAsync } from './shared';
+import { ExpiryHint, MineExpiry } from './Expiry';
 import { ShareButton } from './ShareButton';
+import { cardAlt } from '../domain/moderation';
 
 /** Un dessin du joueur: combien de suites il a reçues, et de quoi les lire. */
 export function MineItem({ card, progress, isNew }: { card: Card; progress?: Progress; isNew: boolean }) {
@@ -24,7 +26,7 @@ export function MineItem({ card, progress, isNew }: { card: Card; progress?: Pro
         <p className="mine-card__status"><strong>{suiteLabel(card)}</strong></p>
         {card.caseNumber < 4 && (progress?.finished ?? 0) > 0 && <p className="hint">Une histoire complète est née de ton dessin !</p>}
         <div className="row-buttons">
-          {leaf || card.caseNumber === 4 ? (
+          {card.hidden ? null : leaf || card.caseNumber === 4 ? (
             <ToyButton variant="success" size="s" icon="book" href={hrefOf({ name: 'story', id: leaf ?? card.id })}>Lire l’histoire</ToyButton>
           ) : card.childCount > 0 ? (
             <ToyButton variant="primary" size="s" icon="eye" href={hrefOf({ name: 'case', id: card.id })}>Voir les suites</ToyButton>
@@ -49,7 +51,7 @@ function DiscoveryPair({ discovery }: { discovery: Discovery }) {
         </figure>
         <PixelIcon name="play" size={24} className="discovery__arrow" />
         <figure>
-          <img src={reply.previewUrl} width={320} height={240} loading="lazy" alt={`Case ${reply.caseNumber} de ${reply.authorName}`} />
+          <img src={reply.previewUrl} width={320} height={240} loading="lazy" alt={cardAlt(reply)} />
           <figcaption>{reply.authorName}</figcaption>
         </figure>
       </div>
@@ -170,6 +172,7 @@ export function MinePage() {
                   <ToyButton variant="soft" size="s" icon="redo" onClick={retryNews}>Réessayer</ToyButton>
                 </div>
               )}
+              <MineExpiry cards={cards} />
               {mood === 'discover' && (replies.loaded || !replies.error) && (
                 <section className="discover" aria-labelledby="news-title">
                   <h2 className="section-title" id="news-title"><span>À découvrir</span></h2>
@@ -248,6 +251,7 @@ export function WeekPage({ id }: { id: string }) {
       tone="lavender"
     >
       {info.error && <Async state={info}>{() => null}</Async>}
+      {info.data && <ExpiryHint isoYear={info.data.isoYear} isoWeek={info.data.isoWeek} />}
       {game?.gameId !== id && <p className="hint">Les histoires inachevées peuvent toujours recevoir une suite.</p>}
       <Async state={cards}>
         {(all) => {

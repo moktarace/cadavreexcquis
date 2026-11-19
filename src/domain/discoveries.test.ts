@@ -75,6 +75,7 @@ describe('informations de « Tous mes dessins »', () => {
     expect(suiteLabel({ caseNumber: 2, childCount: 1 })).toBe('1 suite');
     expect(suiteLabel({ caseNumber: 1, childCount: 3 })).toBe('3 suites');
     expect(suiteLabel({ caseNumber: 4, childCount: 0 })).toBe('Dernière case');
+    expect(suiteLabel({ caseNumber: 1, childCount: 2, hidden: true, hiddenKind: 'review' })).toBe('Dessin temporairement masqué');
   });
 });
 

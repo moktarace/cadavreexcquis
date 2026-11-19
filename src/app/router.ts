@@ -14,7 +14,8 @@ export type Route =
   | { name: 'week'; id: string }
   | { name: 'draw'; parentId: string | null }
   | { name: 'published'; id: string }
-  | { name: 'settings' };
+  | { name: 'settings' }
+  | { name: 'admin' };
 
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -50,6 +51,8 @@ export function parseHash(hash: string): Route {
       return { name: 'draw', parentId: id };
     case 'settings':
       return { name: 'settings' };
+    case 'admin':
+      return { name: 'admin' };
     default:
       return { name: 'home' };
   }

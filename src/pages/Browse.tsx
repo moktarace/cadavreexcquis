@@ -1,15 +1,18 @@
 import { useState } from 'react';
-import { cardChildren, cardPath, cardSubtree, gameTheme, report } from '../backend/api';
+import { cardChildren, cardPath, cardSubtree, gameTheme } from '../backend/api';
 import { go, hrefOf } from '../app/router';
 import { useGame } from '../app/game';
 import { useMarkReplyRead } from '../app/replies';
 import { buildTree, cannotContinue, type Card, type TreeNode } from '../domain/cards';
 import { drawLabel } from '../domain/play';
 import { exportYonkoma, shareYonkoma } from '../editor/export';
-import { StoryThumbnail, Swiper, ThreadPeek, ToyButton, ToyCard, ToyDialog, ToyTabs, ToyToggle, type TabDef } from '../ui';
+import { StoryThumbnail, Swiper, ThreadPeek, ToyButton, ToyCard, ToyTabs, ToyToggle, type TabDef } from '../ui';
 import { BranchExplorer } from './BranchExplorer';
 import { Async, CardLink, PageFrame, plural, useAsync } from './shared';
+import { ExpiryHint } from './Expiry';
+import { ReportButton } from './ReportButton';
 import { ShareButton } from './ShareButton';
+import { cardAlt } from '../domain/moderation';
 
 // ───────────── Case ─────────────
 
@@ -18,27 +21,8 @@ export function CasePage({ id }: { id: string }) {
   const path = useAsync(() => cardPath(id), [id]);
   useMarkReplyRead(path.data);
   const kids = useAsync(() => cardChildren(id), [id]);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [reporting, setReporting] = useState(false);
-  const [reason, setReason] = useState('Contenu inapproprié');
-  const [sending, setSending] = useState(false);
 
   const startContinuation = () => go({ name: 'draw', parentId: id });
-
-  const signal = async (card: Card) => {
-    if (!me || !reason.trim()) return;
-    setSending(true);
-    try {
-      await report(card.id, me.userId, reason.trim());
-      setNotice('Merci, le signalement est enregistré.');
-      setReporting(false);
-    } catch (e) {
-      setNotice(e instanceof Error ? e.message : 'Signalement impossible.');
-      setReporting(false);
-    } finally {
-      setSending(false);
-    }
-  };
 
   return (
     <Async state={path}>
@@ -63,10 +47,9 @@ export function CasePage({ id }: { id: string }) {
                 {card.caseNumber === 4 && <ToyButton variant="success" icon="book" href={hrefOf({ name: 'story', id: card.id })}>Lire l’histoire</ToyButton>}
                 <ToyButton variant="soft" icon="tree" href={hrefOf({ name: 'tree', id: card.id })}>Toutes les suites</ToyButton>
                 {card.authorId === me?.userId && card.caseNumber < 4 && <ShareButton cardId={card.id} />}
-                <ToyButton variant="ghost" icon="alert" onClick={() => setReporting(true)}>Signaler</ToyButton>
+                <ReportButton card={card} onDone={path.reload} />
               </div>
               {blocked && <p className="hint">{blocked}</p>}
-              {notice && <ToyCard tone="green"><p role="status">{notice}</p></ToyCard>}
             </section>
             <Async state={kids}>
               {(children) => (
@@ -84,23 +67,6 @@ export function CasePage({ id }: { id: string }) {
                 </section>
               )}
             </Async>
-            <ToyDialog
-              open={reporting}
-              title="Signaler ce dessin"
-              locked={sending}
-              onClose={() => setReporting(false)}
-              actions={
-                <>
-                  <ToyButton variant="soft" disabled={sending} onClick={() => setReporting(false)}>Annuler</ToyButton>
-                  <ToyButton variant="danger" icon="alert" loading={sending} disabled={!reason.trim()} onClick={() => signal(card)}>Envoyer</ToyButton>
-                </>
-              }
-            >
-              <label className="toy-field">
-                <span>Pourquoi signales-tu ce dessin ?</span>
-                <input className="toy-input" value={reason} maxLength={200} onChange={(e) => setReason(e.target.value)} />
-              </label>
-            </ToyDialog>
           </PageFrame>
         );
       }}
@@ -117,7 +83,12 @@ const READ_TABS: readonly TabDef[] = [
 
 function ThemeBanner({ gameId }: { gameId: string }) {
   const info = useAsync(() => gameTheme(gameId), [gameId]);
-  return info.data ? <p className="theme-banner">{info.data.themeText}</p> : null;
+  return info.data ? (
+    <>
+      <p className="theme-banner">{info.data.themeText}</p>
+      <ExpiryHint isoYear={info.data.isoYear} isoWeek={info.data.isoWeek} />
+    </>
+  ) : null;
 }
 
 /** Les autres versions d'une même case: un tap pour revenir à l'embranchement. */
@@ -166,11 +137,12 @@ export function StoryFlip({ cards, withAlternates = true }: { cards: readonly Ca
         {cards.map((c, i) => (
           <figure key={c.id} className="swiper__slide reader__slide">
             <div className="reader__frame">
-              <img className="drawing" src={c.previewUrl} width={320} height={240} alt={`Case ${c.caseNumber} de ${c.authorName}`} />
+              <img className="drawing" src={c.previewUrl} width={320} height={240} alt={cardAlt(c)} />
               <span className="reader__num" aria-hidden="true">{c.caseNumber}</span>
             </div>
             <figcaption className="thread__caption">Case {c.caseNumber} · {c.authorName}</figcaption>
             {withAlternates && i > 0 && <Alternates card={c} parentId={cards[i - 1].id} />}
+            <ReportButton card={c} />
           </figure>
         ))}
       </Swiper>
@@ -189,7 +161,7 @@ export function StoryBoard({ cards }: { cards: readonly Card[] }) {
     <div className="yonkoma" id="read-panel" role="tabpanel" aria-labelledby="read-board">
       {cards.map((c) => (
         <a key={c.id} className="yonkoma__cell" href={hrefOf({ name: 'case', id: c.id })}>
-          <img src={c.previewUrl} width={320} height={240} alt={`Case ${c.caseNumber} de ${c.authorName}`} />
+          <img src={c.previewUrl} width={320} height={240} alt={cardAlt(c)} />
           <span className="yonkoma__num" aria-hidden="true">{c.caseNumber}</span>
           <span className="yonkoma__author">{c.authorName}</span>
         </a>

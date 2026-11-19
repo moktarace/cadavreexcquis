@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { siblingLabel, type Card } from '../domain/cards';
 import { Mascot, PixelIcon } from './PixelIcon';
 import { ToyButton, ToyCard, ToySpinner } from './Toy';
+import { cardAlt } from '../domain/moderation';
 
 // ───────────── StoryThumbnail ─────────────
 
@@ -19,7 +20,7 @@ export function StoryThumbnail({ cards, href, caption, badge }: StoryThumbnailPr
     <a className="story-thumb" href={href}>
       <span className={`story-thumb__frame ${multi ? 'is-multi' : ''}`}>
         {cards.slice(0, 4).map((c) => (
-          <img key={c.id} src={c.previewUrl} width={320} height={240} loading="lazy" alt={`Case ${c.caseNumber} de ${c.authorName}`} />
+          <img key={c.id} src={c.previewUrl} width={320} height={240} loading="lazy" alt={cardAlt(c)} />
         ))}
         {badge && <span className="story-thumb__badge">{badge}</span>}
       </span>
@@ -84,10 +85,12 @@ interface WeeklyThemeCardProps {
   remaining?: string;
   stale?: boolean;
   error?: string | null;
+  /** « Les dessins de ce thème disparaîtront le lundi … » */
+  expiryNote?: string;
   onRetry?: () => void;
 }
 
-export function WeeklyThemeCard({ status, themeText, weekLabel, remaining, stale, error, onRetry }: WeeklyThemeCardProps) {
+export function WeeklyThemeCard({ status, themeText, weekLabel, remaining, stale, error, expiryNote, onRetry }: WeeklyThemeCardProps) {
   if (!themeText && status === 'unconfigured') {
     return (
       <ToyCard tone="error" title="Serveur non configuré">
@@ -122,6 +125,7 @@ export function WeeklyThemeCard({ status, themeText, weekLabel, remaining, stale
           {stale ? ' · hors connexion' : ''}
         </span>
       </p>
+      {expiryNote && themeText && <p className="theme-card__expiry">{expiryNote}</p>}
     </section>
   );
 }

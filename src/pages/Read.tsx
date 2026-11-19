@@ -5,6 +5,7 @@ import type { Card } from '../domain/cards';
 import { showArchives } from '../domain/discovery';
 import { StoryThumbnail, ToyButton, ToyCard, ToySpinner } from '../ui';
 import { ArchiveShelf } from './Home';
+import { ExpiryHint } from './Expiry';
 import { PageFrame, useAsync } from './shared';
 
 export interface ReadStory {
@@ -78,6 +79,7 @@ export function ReadPage() {
 
   return (
     <PageFrame title="Lire" tone="pink" backHref={hrefOf({ name: 'home' })}>
+      {game && <ExpiryHint isoYear={game.isoYear} isoWeek={game.isoWeek} />}
       {state.error && <p className="error-text" role="alert">{state.error}</p>}
       {!state.error && (state.data === null || !gameId ? <ToySpinner label="Chargement des histoires" /> : <ReadView {...state.data} weekHref={hrefOf({ name: 'week', id: gameId })} />)}
     </PageFrame>

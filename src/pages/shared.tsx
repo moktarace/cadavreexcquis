@@ -3,6 +3,7 @@ import { explain } from '../backend/api';
 import type { Card } from '../domain/cards';
 import { hrefOf } from '../app/router';
 import { ScreenHeader, StoryThumbnail, ToyButton, ToyCard, ToySpinner } from '../ui';
+import { cardAlt } from '../domain/moderation';
 
 export function useAsync<T>(fn: () => Promise<T>, deps: readonly unknown[]) {
   const [state, setState] = useState<{ data: T | null; error: string | null; loading: boolean }>({
@@ -64,7 +65,7 @@ export function CardImage({ card, size = 'm' }: { card: Card; size?: 's' | 'm' |
       width={320}
       height={240}
       loading="lazy"
-      alt={`Case ${card.caseNumber} de ${card.authorName}`}
+      alt={cardAlt(card)}
     />
   );
 }

@@ -11,6 +11,7 @@ import { ReplyPage } from './pages/Reply';
 import { HomePage } from './pages/Home';
 import { ReadPage } from './pages/Read';
 import { ArchivesPage, MinePage, WeekPage } from './pages/Library';
+import { AdminPage } from './pages/Admin';
 import { SettingsPage } from './pages/Settings';
 import { Dock, type DockItem } from './ui';
 
@@ -58,6 +59,8 @@ function Page({ route }: { route: Route }) {
       return <WeekPage id={route.id} />;
     case 'settings':
       return <SettingsPage />;
+    case 'admin':
+      return <AdminPage />;
     case 'draw':
       return null;
   }

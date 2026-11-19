@@ -1,11 +1,11 @@
 import { useState } from 'react';
-import { explain, linkEmail } from '../backend/api';
+import { explain, isAdmin, linkEmail } from '../backend/api';
 import { hrefOf } from '../app/router';
 import { useGame } from '../app/game';
 import { useInstall } from '../app/hooks';
 import { ToyButton, ToyCard } from '../ui';
 import { NotificationsSection } from './Notifications';
-import { PageFrame } from './shared';
+import { PageFrame, useAsync } from './shared';
 
 export function SettingsPage() {
   const g = useGame();
@@ -14,6 +14,7 @@ export function SettingsPage() {
   const [email, setEmail] = useState('');
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const admin = useAsync(() => (g.me ? isAdmin() : Promise.resolve(false)), [g.me?.userId]);
 
   const run = async (fn: () => Promise<void>, ok: string) => {
     setBusy(true);
@@ -59,6 +60,8 @@ export function SettingsPage() {
                 </div>
               </>
             )}
+            {admin.data && <ToyButton variant="soft" icon="gear" href={hrefOf({ name: 'admin' })}>Administration</ToyButton>}
+            <p className="hint">Identifiant du compte (utile pour l’administration) : <code className="account-id">{g.me.userId}</code></p>
             {message && <p role="status" className="plain-text"><strong>{message}</strong></p>}
           </>
         ) : (

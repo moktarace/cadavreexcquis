@@ -4,6 +4,7 @@ import { go, hrefOf } from '../app/router';
 import { useGame } from '../app/game';
 import { useNow } from '../app/hooks';
 import { useReplies } from '../app/replies';
+import { expiryNotice, gameWindow } from '../domain/expiry';
 import type { Card } from '../domain/cards';
 import { archiveCaption, showArchives } from '../domain/discovery';
 import { Logo, StoryThumbnail, ToyButton, ToyCard, ToySpinner, WeeklyThemeCard, formatDelay } from '../ui';
@@ -107,6 +108,7 @@ export function HomePage() {
         weekLabel={g.game ? `Semaine ${g.game.isoWeek} · ${g.game.isoYear}` : undefined}
         remaining={g.game ? formatDelay(g.game.nextThemeAtMs - g.serverNow(now)) : undefined}
         stale={g.stale}
+        expiryNote={g.game ? expiryNotice(gameWindow(g.game.isoYear, g.game.isoWeek).expiresMs) : undefined}
         error={g.error}
         onRetry={g.reload}
       />

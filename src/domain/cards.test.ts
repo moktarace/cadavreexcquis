@@ -51,6 +51,12 @@ describe('règles de continuation côté lecture', () => {
     expect(cannotContinue(cards[0], 'bob')).toBeNull();
   });
 
+  it('interdit de continuer directement une case masquée, sans toucher à ses descendants', () => {
+    const hidden = { ...cards[1], hidden: true, hiddenKind: 'review' as const };
+    expect(cannotContinue(hidden, 'alice')).toMatch(/masqué/);
+    expect(continuable([hidden, cards[3]], 'zoe').map((c) => c.id)).toEqual(['a3']);
+  });
+
   it('autorise à réintervenir sur une case d’un autre auteur', () => {
     expect(cannotContinue(cards[1], 'alice')).toBeNull();
   });

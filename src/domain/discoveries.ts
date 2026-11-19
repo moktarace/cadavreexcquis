@@ -1,5 +1,6 @@
 /** Réponses des autres joueurs à mes dessins: règle de nouveauté et libellés, indépendants du réseau. */
 import type { Card } from './cards';
+import { hiddenLabel } from './moderation';
 
 /** Une continuation directe, pas encore ouverte, d'une case du joueur. */
 export interface UnreadReply {
@@ -53,7 +54,8 @@ export function missingCardIds(unread: readonly UnreadReply[], known: ReadonlyMa
 }
 
 /** « En attente d'une suite », « 1 suite », « 3 suites » ou « Dernière case ». */
-export function suiteLabel(card: Pick<Card, 'caseNumber' | 'childCount'>): string {
+export function suiteLabel(card: Pick<Card, 'caseNumber' | 'childCount' | 'hidden' | 'hiddenKind'>): string {
+  if (card.hidden) return hiddenLabel(card.hiddenKind);
   if (card.caseNumber >= 4) return 'Dernière case';
   if (card.childCount === 0) return 'En attente d’une suite';
   return card.childCount === 1 ? '1 suite' : `${card.childCount} suites`;

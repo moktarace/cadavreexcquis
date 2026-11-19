@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { Card } from '../domain/cards';
+import { cardAlt } from '../domain/moderation';
 
 interface ThreadPeekProps {
   /** Cases de la racine jusqu'à la dernière, dans l'ordre. */
@@ -30,7 +31,7 @@ export function ThreadPeek({ cards }: ThreadPeekProps) {
           ))}
         </div>
       )}
-      <img className="drawing" src={shown.previewUrl} width={320} height={240} alt={`Case ${shown.caseNumber} de ${shown.authorName}`} />
+      <img className="drawing" src={shown.previewUrl} width={320} height={240} alt={cardAlt(shown)} />
       <p className="thread__caption">
         Case {shown.caseNumber} · {shown.authorName}
         {shown.id === last.id && cards.length > 1 ? ' (la plus récente)' : ''}

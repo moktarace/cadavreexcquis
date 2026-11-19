@@ -18,6 +18,7 @@ describe('routeur par hash', () => {
     ['#/draw/d1', { name: 'draw', parentId: 'd1' }],
     ['#/week/g1', { name: 'week', id: 'g1' }],
     ['#/archives', { name: 'archives' }],
+    ['#/admin', { name: 'admin' }],
   ])('analyse %s', (hash, route) => {
     expect(parseHash(hash)).toEqual(route);
   });
