@@ -6,16 +6,20 @@ import { go } from '../../app/router';
 import { useAsync } from '../../pages/shared';
 import { ThreadPeek, ToyButton, ToyCard, ToyDialog } from '../../ui';
 import type { EditorSession } from '../session';
+import { caseRole } from '../../domain/play';
+import type { BriefInfo } from './Brief';
 import { Thumb } from './Panels';
 
 interface Props {
   session: EditorSession;
   target: Target;
+  /** Rang de la case et thème d'origine de l'histoire. */
+  brief: BriefInfo | null;
   onClose: () => void;
 }
 
 /** Vérification finale du dessin et de la case parente, avant d'envoyer au serveur. */
-export function PublishSheet({ session, target, onClose }: Props) {
+export function PublishSheet({ session, target, brief, onClose }: Props) {
   const g = useGame();
   const online = useOnline();
   const [busy, setBusy] = useState(false);
@@ -47,19 +51,20 @@ export function PublishSheet({ session, target, onClose }: Props) {
   return (
     <ToyDialog
       open
-      title={target.kind === 'root' ? 'Publier une case 1' : 'Publier la suite'}
+      title="Publier ma case"
       onClose={onClose}
       locked={busy}
       actions={
         <>
           <ToyButton variant="soft" onClick={onClose} disabled={busy}>Retour au dessin</ToyButton>
           <ToyButton variant="primary" icon="share" onClick={send} loading={busy} disabled={blocked !== null}>
-            {busy ? 'Publication…' : 'Publier'}
+            {busy ? 'Publication…' : 'Publier ma case'}
           </ToyButton>
         </>
       }
     >
-      {g.game && <p className="theme-banner">{g.game.themeText}</p>}
+      {brief?.themeText && <p className="theme-banner">{brief.themeText}</p>}
+      {brief && <p className="hint"><strong>{caseRole(brief.caseNumber).position}</strong>{caseRole(brief.caseNumber).final ? ' : c’est la dernière case de cette histoire.' : ''}</p>}
       <div className="publish-preview">
         {context.data?.map((c) => (
           <figure key={c.id}>

@@ -434,3 +434,7 @@
 .strip-view a[aria-current='page'] .story-thumb__frame, .strip-view a[aria-current='page'] img { outline: 4px solid var(--yellow); }
 .drawing { display: block; width: 100%; height: auto; background: #fff; border: var(--border); border-radius: var(--radius-m); image-rendering: pixelated; box-shadow: 0 4px 0 var(--ink); }
 .drawing-l { max-width: 640px; margin: 0 auto; }
+
+.btn-stack { display: grid; gap: 1px; text-align: left; }
+.btn-stack b { font-weight: 900; }
+.btn-stack small { font-size: 0.74rem; font-weight: 700; opacity: 0.8; }

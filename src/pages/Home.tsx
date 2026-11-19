@@ -102,8 +102,6 @@ export function HomePage() {
         <Logo compact />
         <ToyButton variant="soft" size="s" iconOnly icon="gear" href={hrefOf({ name: 'settings' })} aria-label="Réglages" />
       </div>
-      <p className="tagline">Découvre un dessin. Imagine la suite. Passe le relais !</p>
-
       <WeeklyThemeCard
         status={g.status}
         themeText={g.game?.themeText}
@@ -114,9 +112,15 @@ export function HomePage() {
         onRetry={g.reload}
       />
 
+      <p className="tagline">À plusieurs, dessinez des histoires en 4 cases. Chacun imagine la suite du dessin d’un autre !</p>
+
       <div className="home-actions">
-        <ToyButton variant="primary" size="xl" icon="play" href={hrefOf({ name: 'play', startId: null })}>Jouer</ToyButton>
-        <ToyButton variant="soft" size="l" icon="pencil" onClick={() => go({ name: 'draw', parentId: null })}>Commencer une histoire</ToyButton>
+        <ToyButton variant="primary" size="xl" icon="play" href={hrefOf({ name: 'play', startId: null })}>
+          <span className="btn-stack"><b>Continuer une histoire</b><small>Dessine la suite de quelqu’un !</small></span>
+        </ToyButton>
+        <ToyButton variant="soft" size="l" icon="pencil" onClick={() => go({ name: 'draw', parentId: null })}>
+          <span className="btn-stack"><b>Commencer une histoire</b><small>Imagine la première case !</small></span>
+        </ToyButton>
       </div>
 
       {g.status === 'ready' && feed.error && (

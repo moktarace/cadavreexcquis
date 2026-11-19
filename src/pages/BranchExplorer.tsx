@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { go, hrefOf } from '../app/router';
+import { drawLabel } from '../domain/play';
 import { cannotContinue, explorerView, isOpenEnd, pruneTree, siblingLabel, treeStats, type TreeNode } from '../domain/cards';
 import { BranchNode, ToyButton, ToyCard, ToyToggle } from '../ui';
 import { plural } from './shared';
@@ -43,7 +44,7 @@ export function BranchExplorer({ root, userId, initialId = null }: Props) {
         {plural(stats.open, 'attend une suite', 'attendent une suite')}
       </p>
       <ToyToggle checked={onlyOpen} onChange={setOnlyOpen}>Seulement celles qui attendent une suite</ToyToggle>
-      {filteredOut && <ToyCard tone="green"><p>Toutes les versions de cette histoire sont terminées.</p></ToyCard>}
+      {filteredOut && <ToyCard tone="green"><p>Aucune version de cette histoire n’attend de suite pour l’instant. Tu peux toujours en imaginer une autre depuis les cases 1 à 3.</p></ToyCard>}
 
       <div className="branch-tree" ref={treeRef}>
         <div className="branch-level">
@@ -102,7 +103,7 @@ export function BranchExplorer({ root, userId, initialId = null }: Props) {
         </div>
         <div className="explorer-bar__actions">
           <ToyButton variant="primary" size="s" icon="pencil" disabled={blocked !== null} onClick={startContinuation}>
-            Dessiner la suite
+            {drawLabel(current.caseNumber)}
           </ToyButton>
           {current.caseNumber === 4 && (
             <ToyButton variant="success" size="s" icon="book" href={hrefOf({ name: 'story', id: current.id })}>Lire l’histoire</ToyButton>

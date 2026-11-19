@@ -3,7 +3,7 @@ import { cardPath, deckCount, deckPage, explain, latestOpenOwn } from '../backen
 import { go, hrefOf } from '../app/router';
 import { useGame } from '../app/game';
 import { cannotContinue, type Card } from '../domain/cards';
-import { askLabel, nextProposals, planWindow } from '../domain/play';
+import { askLabel, caseRole, drawLabel, nextProposals, planWindow } from '../domain/play';
 import { EmptyState, Mascot, ThreadPeek, ToyButton, ToyCard, ToySpinner } from '../ui';
 import { PageFrame } from './shared';
 import { ShareButton } from './ShareButton';
@@ -21,15 +21,17 @@ interface ViewProps {
 
 /** Une histoire, ce qu'il faut inventer, un bouton pour le faire. */
 export function PlayView({ card, path, canSwitch, busy, onAnother }: ViewProps) {
+  const role = caseRole(card.caseNumber + 1);
   return (
     <div className="play">
       <h2 className="play__ask">{askLabel(card.caseNumber)}</h2>
+      <p className={`play__role ${role.final ? 'is-final' : ''}`}><strong>{role.position}</strong> · {role.prompt}</p>
       <ThreadPeek key={card.id} cards={path && path.length > 0 ? path : [card]} />
       {canSwitch && (
         <ToyButton className="play__other" variant="soft" icon="redo" loading={busy} onClick={onAnother}>Une autre histoire</ToyButton>
       )}
       <ToyButton className="deck__cta" variant="primary" size="xl" icon="pencil" onClick={() => go({ name: 'draw', parentId: card.id })}>
-        Dessiner la suite
+        {drawLabel(card.caseNumber)}
       </ToyButton>
       <div className="play__more">
         <ToyButton variant="ghost" size="s" onClick={startStory}>Commencer une histoire</ToyButton>

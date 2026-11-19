@@ -3,6 +3,7 @@ import { cardChildren, cardPath, cardSubtree, gameTheme, report } from '../backe
 import { go, hrefOf } from '../app/router';
 import { useGame } from '../app/game';
 import { buildTree, cannotContinue, type Card, type TreeNode } from '../domain/cards';
+import { drawLabel } from '../domain/play';
 import { exportYonkoma, shareYonkoma } from '../editor/export';
 import { StoryThumbnail, Swiper, ThreadPeek, ToyButton, ToyCard, ToyDialog, ToyTabs, ToyToggle, type TabDef } from '../ui';
 import { BranchExplorer } from './BranchExplorer';
@@ -55,7 +56,7 @@ export function CasePage({ id }: { id: string }) {
               <ThreadPeek key={card.id} cards={cards} />
               <div className="row-buttons">
                 <ToyButton variant="primary" icon="pencil" disabled={blocked !== null} onClick={startContinuation}>
-                  Dessiner la suite
+                  {drawLabel(card.caseNumber)}
                 </ToyButton>
                 {card.caseNumber === 4 && <ToyButton variant="success" icon="book" href={hrefOf({ name: 'story', id: card.id })}>Lire l’histoire</ToyButton>}
                 <ToyButton variant="soft" icon="tree" href={hrefOf({ name: 'tree', id: card.id })}>Toutes les suites</ToyButton>
@@ -121,13 +122,18 @@ function ThemeBanner({ gameId }: { gameId: string }) {
 export function BranchSwitch({ alternates, final = false }: { alternates: readonly Card[]; final?: boolean }) {
   const [open, setOpen] = useState(false);
   if (alternates.length === 0) return null;
-  const what = final ? 'fin' : 'suite';
   return (
     <div className="branch-switch">
       <ToyButton variant="soft" size="s" icon="tree" selected={open} onClick={() => setOpen(!open)}>
-        {alternates.length === 1 ? `Voir une autre ${what}` : `Voir les ${alternates.length} autres ${what}s`}
+        {final
+          ? alternates.length === 1 ? 'Découvrir une autre fin' : `Découvrir les ${alternates.length} autres fins`
+          : alternates.length === 1 ? 'Voir une autre suite' : `Voir les ${alternates.length} autres suites`}
       </ToyButton>
-      {open && <p className="hint">Et si l’histoire continuait autrement ?</p>}
+      {open && (
+        <p className="hint">
+          Et si l’histoire continuait autrement ? Plusieurs joueurs peuvent imaginer {final ? 'des fins' : 'des suites'} différentes à partir des mêmes cases.
+        </p>
+      )}
       {open && (
         <div className="branch-switch__row">
           {alternates.map((c) => (
@@ -223,7 +229,7 @@ export function StoryPage({ id }: { id: string }) {
                 <p className="hint">Auteurs : {authors.join(', ')}.</p>
                 <div className="row-buttons">
                   {!complete && cannotContinue(cards[cards.length - 1], me?.userId ?? null) === null && (
-                    <ToyButton variant="primary" icon="pencil" onClick={() => go({ name: 'draw', parentId: cards[cards.length - 1].id })}>Dessiner la suite</ToyButton>
+                    <ToyButton variant="primary" icon="pencil" onClick={() => go({ name: 'draw', parentId: cards[cards.length - 1].id })}>{drawLabel(cards[cards.length - 1].caseNumber)}</ToyButton>
                   )}
                   {complete && cards.length > 2 && cannotContinue(cards[cards.length - 2], me?.userId ?? null) === null && (
                     <ToyButton variant="secondary" icon="pencil" onClick={() => go({ name: 'draw', parentId: cards[cards.length - 2].id })}>Inventer une autre fin</ToyButton>
@@ -249,7 +255,7 @@ export function StoryPage({ id }: { id: string }) {
                       return (
                         <section className="read-options">
                           <ToyToggle checked={showAlt} onChange={setShowAlt} hint={plural(alt.length, 'autre possibilité', 'autres possibilités')}>
-                            {complete ? 'Voir une autre fin' : 'Voir une autre suite'}
+                            {complete ? 'Découvrir une autre fin' : 'Voir une autre suite'}
                           </ToyToggle>
                           {showAlt && (
                             <div className="recent__row">

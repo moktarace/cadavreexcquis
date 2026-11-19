@@ -21,15 +21,68 @@ export function progressMessage(caseNumber: number, childCount: number, progress
 export interface PublishedCopy {
   title: string;
   text: string;
+  /** Précision discrète: où retrouver la suite, ou ce qui reste possible. */
+  note: string;
 }
 
 /** Message après publication, selon la case publiée. */
 export function publishedCopy(caseNumber: number): PublishedCopy {
-  if (caseNumber >= 4) return { title: 'Votre histoire est terminée !', text: 'Découvre les quatre cases.' };
-  if (caseNumber === 1) {
-    return { title: 'Ta première case est publiée !', text: 'Elle attend maintenant qu’un autre joueur imagine la suite.' };
+  if (caseNumber >= STORY_LENGTH) {
+    return {
+      title: 'Votre histoire est terminée !',
+      text: 'Vous avez créé une BD en quatre cases !',
+      note: 'D’autres joueurs peuvent encore imaginer des suites différentes à partir des cases précédentes.',
+    };
   }
-  return { title: 'Ta suite est publiée !', text: 'Un autre joueur peut maintenant continuer l’histoire.' };
+  if (caseNumber === 1) {
+    return {
+      title: 'Ta première case est publiée !',
+      text: 'Elle attend maintenant qu’un autre joueur imagine la suite.',
+      note: 'Retrouve ton dessin dans Mes dessins pour voir ce que les autres en feront.',
+    };
+  }
+  return {
+    title: 'Ta suite est publiée !',
+    text: 'Ton dessin rejoint l’histoire. Un autre joueur peut maintenant continuer !',
+    note: 'Les continuations imaginées par les autres apparaîtront dans Mes dessins.',
+  };
+}
+
+export const STORY_LENGTH = 4;
+
+export interface CaseRole {
+  /** « Case 3 sur 4 » */
+  position: string;
+  /** Ce qu'on attend du joueur à cette étape de l'histoire. */
+  prompt: string;
+  /** Dernière case de ce chemin: l'histoire s'y termine. */
+  final: boolean;
+}
+
+/** Rôle narratif de la case que le joueur s'apprête à dessiner. */
+export function caseRole(caseNumber: number): CaseRole {
+  const position = `Case ${caseNumber} sur ${STORY_LENGTH}`;
+  switch (caseNumber) {
+    case 1:
+      return { position, prompt: 'Imagine le début de l’histoire !', final: false };
+    case 2:
+      return { position, prompt: 'Dessine ce qui se passe ensuite !', final: false };
+    case 3:
+      return { position, prompt: 'L’histoire approche de sa fin !', final: false };
+    default:
+      return { position, prompt: 'C’est la dernière case ! Imagine la fin de l’histoire.', final: true };
+  }
+}
+
+/** « Case 3 sur 4 · Un boulanger jaloux » (le thème d'origine de l'histoire). */
+export function briefTitle(caseNumber: number, themeText?: string | null): string {
+  const { position } = caseRole(caseNumber);
+  return themeText ? `${position} · ${themeText}` : position;
+}
+
+/** Libellé du bouton qui ouvre l'éditeur pour continuer une case: la quatrième est une conclusion. */
+export function drawLabel(parentCaseNumber: number): string {
+  return parentCaseNumber + 1 >= STORY_LENGTH ? 'Dessiner la fin' : 'Dessiner la suite';
 }
 
 /** Ce que le joueur doit inventer, à partir de la case qu'on lui propose. */

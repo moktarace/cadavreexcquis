@@ -18,7 +18,7 @@ export const FINAL_CASE = 4;
 
 /** Raison pour laquelle un joueur ne peut pas continuer une case, ou null s'il le peut. */
 export function cannotContinue(card: Card, userId: string | null): string | null {
-  if (card.caseNumber >= FINAL_CASE) return 'Cette histoire est terminée.';
+  if (card.caseNumber >= FINAL_CASE) return 'Cette version de l’histoire est terminée.';
   if (card.authorId === userId) return 'Tu ne peux pas continuer ton propre dessin.';
   return null;
 }

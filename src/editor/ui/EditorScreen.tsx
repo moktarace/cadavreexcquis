@@ -3,6 +3,7 @@ import type { Target } from '../../backend/api';
 import { go } from '../../app/router';
 import { ToyButton, ToyDialog } from '../../ui';
 import { EditorSession, closesDrawerOnDraw } from '../session';
+import { Brief, useBrief } from './Brief';
 import { ContextPanel, PublishSheet } from './PublishSheet';
 import { SettingsPanel } from './Panels';
 import { Stage, type StageHandle } from './Stage';
@@ -19,6 +20,7 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
     if (session.canUndo && !window.confirm('Abandonner ce dessin ? Il ne sera pas conservé.')) return;
     go(parentId ? { name: 'play', startId: parentId } : { name: 'home' });
   };
+  const brief = useBrief(parentId);
   const [moreOpen, setMoreOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
@@ -94,14 +96,18 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
     <div className="editor">
       <header className="ed-top">
         <ToyButton className="ed-collapse" variant="soft" size="s" icon="back" onClick={onClose} aria-label="Quitter l'éditeur">Quitter</ToyButton>
-        {parentId && (
-          <ToyButton className="ed-collapse" variant="soft" size="s" icon="tree" onClick={() => setContextOpen(true)} aria-label="Voir les cases précédentes">Contexte</ToyButton>
-        )}
         <span className="spacer" />
         <ToyButton variant="soft" size="s" iconOnly icon="undo" onClick={() => session.undo()} disabled={!session.canUndo} aria-label="Annuler" title="Annuler" />
         <ToyButton variant="soft" size="s" iconOnly icon="redo" onClick={() => session.redo()} disabled={!session.canRedo} aria-label="Rétablir" title="Rétablir" />
-        <ToyButton variant="primary" size="s" icon="share" onClick={() => { session.flush(); setPublishOpen(true); }}>Publier</ToyButton>
+        <ToyButton variant="primary" size="s" icon="share" onClick={() => { session.flush(); setPublishOpen(true); }}>Publier ma case</ToyButton>
       </header>
+
+      <div className="ed-brief-row">
+        {brief && <Brief info={brief} />}
+        {parentId && (
+          <ToyButton className="ed-review" variant="soft" size="s" icon="eye" onClick={() => setContextOpen(true)}>Revoir l’histoire</ToyButton>
+        )}
+      </div>
 
       <div className="ed-stage" onPointerDownCapture={() => moreOpen && closesDrawerOnDraw(session.tool) && setMoreOpen(false)}>
         <Stage session={session} version={version} handleRef={stage} />
@@ -131,11 +137,16 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
       </section>
 
       {parentId && (
-        <ToyDialog open={contextOpen} title="Les cases précédentes" onClose={() => setContextOpen(false)}>
+        <ToyDialog
+          open={contextOpen}
+          title="Revoir l’histoire"
+          onClose={() => setContextOpen(false)}
+          actions={<ToyButton variant="primary" icon="pencil" onClick={() => setContextOpen(false)}>Retour au dessin</ToyButton>}
+        >
           <ContextPanel parentId={parentId} />
         </ToyDialog>
       )}
-      {publishOpen && <PublishSheet session={session} target={target} onClose={() => setPublishOpen(false)} />}
+      {publishOpen && <PublishSheet session={session} target={target} brief={brief} onClose={() => setPublishOpen(false)} />}
     </div>
   );
 }

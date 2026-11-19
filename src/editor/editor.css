@@ -3,7 +3,7 @@ body.editing { overflow: hidden; position: fixed; inset: 0; width: 100%; overscr
 
 .editor {
   position: fixed; inset: 0;
-  display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto;
+  display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto;
   height: 100dvh;
   padding: var(--safe-t) var(--safe-r) 0 var(--safe-l);
   background: var(--violet-bar);
@@ -16,6 +16,14 @@ body.editing { overflow: hidden; position: fixed; inset: 0; width: 100%; overscr
 .ed-top .spacer { flex: 1; }
 .ed-top > * { flex: none; }
 .ed-top .spacer { flex: 1 0 0; min-width: 0; }
+
+/* Repère de l'histoire: sous la barre en portrait, au-dessus de la console en paysage (le canevas ne perd rien). */
+.ed-brief-row { display: flex; align-items: center; gap: 8px; padding: 0 12px 8px; min-width: 0; color: #fff; }
+.ed-brief { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.ed-brief strong { font: 900 0.82rem / 1.25 var(--font-body); text-wrap: balance; }
+.ed-brief span { font: 700 0.76rem / 1.25 var(--font-body); color: var(--lavender-soft); }
+.ed-brief.is-final span { color: var(--yellow); }
+.ed-review { flex: none; }
 @media (max-width: 440px) {
   .ed-collapse .toy-btn__label { display: none; }
   .ed-collapse { width: var(--tap-s); padding: 0; }
@@ -91,9 +99,11 @@ body.editing { overflow: hidden; position: fixed; inset: 0; width: 100%; overscr
 
 /* Paysage: la console passe à droite, comme une vraie portable à deux zones */
 @media (orientation: landscape) and (min-width: 560px) {
-  .editor { grid-template-columns: minmax(0, 1fr) clamp(216px, 34vw, 300px); grid-template-rows: auto minmax(0, 1fr); }
-  .ed-top { grid-column: 1 / -1; }
-  .ed-stage { margin: 0 0 10px 8px; }
+  .editor { grid-template-columns: minmax(0, 1fr) clamp(216px, 34vw, 300px); grid-template-rows: auto auto minmax(0, 1fr); }
+  .ed-top { grid-column: 1 / -1; grid-row: 1; }
+  .ed-stage { grid-column: 1; grid-row: 2 / 4; margin: 0 0 10px 8px; }
+  .ed-brief-row { grid-column: 2; grid-row: 2; flex-direction: column; align-items: stretch; padding: 0 10px 8px; }
+  .ed-console { grid-column: 2; grid-row: 3; }
   .ed-console { justify-content: flex-start; min-height: 0; margin: 0 0 0 10px; overflow-y: auto; border: var(--line); border-right: 0; border-bottom: 0; border-radius: var(--radius-l) 0 0 0; padding-bottom: calc(10px + var(--safe-b)); }
   .ed-console > * { flex: none; }
   .ed-more { position: static; max-height: none; order: 3; box-shadow: none; }

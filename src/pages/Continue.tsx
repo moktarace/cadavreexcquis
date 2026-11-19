@@ -3,6 +3,7 @@ import { cardPath, deckCount, deckPage, explain, type DeckQuery } from '../backe
 import { go, hrefOf } from '../app/router';
 import { useGame } from '../app/game';
 import type { Card } from '../domain/cards';
+import { drawLabel } from '../domain/play';
 import { DEPTHS, appendUnique, isNear, planRandom, shouldLoadMore, type Depth } from '../domain/discovery';
 import { EmptyState, Mascot, Swiper, ThreadPeek, ToySpinner, ToyButton } from '../ui';
 import { PageFrame } from './shared';
@@ -181,7 +182,7 @@ export function ContinueDeck({ roomId, userId, startCard }: DeckProps) {
             <ToyButton variant="soft" iconOnly icon="play" aria-label="Histoire suivante" disabled={index >= cards.length - 1} onClick={() => setIndex(index + 1)} />
           </div>
           <ToyButton className="deck__cta" variant="primary" size="xl" icon="pencil" onClick={() => go({ name: 'draw', parentId: current.id })}>
-            Dessiner la suite
+            {drawLabel(current.caseNumber)}
           </ToyButton>
         </>
       )}

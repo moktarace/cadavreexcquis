@@ -60,6 +60,14 @@ describe('règles de continuation côté lecture', () => {
     expect(list).toEqual(['f2', 'd3', 'b2']);
   });
 
+  it('une case 4 ne termine que sa propre branche', () => {
+    // c4 termine a1 → b2 → a3 → c4, mais b2 et a1 restent continuables par d'autres versions
+    const ids = continuable(cards, 'zoe').map((c) => c.id);
+    expect(ids).toEqual(expect.arrayContaining(['a1', 'b2', 'f2', 'a3', 'd3']));
+    expect(ids).not.toContain('c4');
+    expect(ids).not.toContain('e4');
+  });
+
   it('propose tout à un joueur non connecté... sauf les fins', () => {
     expect(continuable(cards, null).map((c) => c.id)).not.toContain('c4');
   });

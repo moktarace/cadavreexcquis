@@ -49,19 +49,45 @@ export function PublishedView({ cards, othersAvailable }: ViewProps) {
           );
         })}
       </div>
+      <p className="hint reveal__note"><NoteWithLink text={copy.note} /></p>
       <div className="reveal__actions">
-        {othersAvailable ? (
-          <ToyButton variant="primary" size="l" icon="play" href={hrefOf({ name: 'play', startId: null })}>Jouer à nouveau</ToyButton>
+        {complete ? (
+          <>
+            <ToyButton variant="primary" size="l" icon="book" href={hrefOf({ name: 'story', id: mine.id })}>Lire notre histoire</ToyButton>
+            {othersAvailable ? (
+              <ToyButton variant="soft" icon="play" href={hrefOf({ name: 'play', startId: null })}>Jouer à nouveau</ToyButton>
+            ) : (
+              <ToyButton variant="soft" icon="pencil" onClick={() => go({ name: 'draw', parentId: null })}>Commencer une nouvelle histoire</ToyButton>
+            )}
+          </>
+        ) : othersAvailable ? (
+          <>
+            <ToyButton variant="primary" size="l" icon="play" href={hrefOf({ name: 'play', startId: null })}>Continuer une autre histoire</ToyButton>
+            <ToyButton variant="ghost" href={hrefOf({ name: 'case', id: mine.id })}>Voir mon histoire</ToyButton>
+          </>
         ) : (
           <>
             <p className="hint">Il n’y a pas d’autre histoire à continuer pour le moment : d’autres joueurs doivent d’abord dessiner.</p>
-            <ToyButton variant="primary" size="l" icon="pencil" onClick={() => go({ name: 'draw', parentId: null })}>Commencer une histoire</ToyButton>
-            {!complete && <ShareButton cardId={mine.id} label="Inviter quelqu’un à continuer" />}
+            <ToyButton variant="primary" size="l" icon="pencil" onClick={() => go({ name: 'draw', parentId: null })}>Commencer une nouvelle histoire</ToyButton>
+            <ShareButton cardId={mine.id} label="Inviter quelqu’un à continuer" />
+            <ToyButton variant="ghost" href={hrefOf({ name: 'case', id: mine.id })}>Voir mon histoire</ToyButton>
           </>
         )}
-        <ToyButton variant="ghost" href={hrefOf(complete ? { name: 'story', id: mine.id } : { name: 'case', id: mine.id })}>Voir mon histoire</ToyButton>
       </div>
     </div>
+  );
+}
+
+/** « Mes dessins » dans une phrase devient un lien vers cet écran. */
+function NoteWithLink({ text }: { text: string }) {
+  const [before, after] = text.split('Mes dessins');
+  if (after === undefined) return <>{text}</>;
+  return (
+    <>
+      {before}
+      <a href={hrefOf({ name: 'mine' })}>Mes dessins</a>
+      {after}
+    </>
   );
 }
 

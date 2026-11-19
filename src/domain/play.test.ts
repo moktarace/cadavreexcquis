@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { askLabel, newContinuations, nextProposals, planWindow, progressMessage, publishedCopy, shuffle } from './play';
+import { askLabel, briefTitle, caseRole, drawLabel, newContinuations, nextProposals, planWindow, progressMessage, publishedCopy, shuffle } from './play';
 
 describe('messages de « Mes dessins »', () => {
   it('dit qu’un dessin attend une suite', () => {
@@ -22,15 +22,50 @@ describe('messages de « Mes dessins »', () => {
 
 describe('messages après publication', () => {
   it('première case', () => {
-    expect(publishedCopy(1)).toEqual({ title: 'Ta première case est publiée !', text: 'Elle attend maintenant qu’un autre joueur imagine la suite.' });
+    expect(publishedCopy(1)).toEqual({
+      title: 'Ta première case est publiée !',
+      text: 'Elle attend maintenant qu’un autre joueur imagine la suite.',
+      note: 'Retrouve ton dessin dans Mes dessins pour voir ce que les autres en feront.',
+    });
   });
 
   it('cases 2 et 3', () => {
-    for (const n of [2, 3]) expect(publishedCopy(n)).toEqual({ title: 'Ta suite est publiée !', text: 'Un autre joueur peut maintenant continuer l’histoire.' });
+    for (const n of [2, 3]) {
+      const c = publishedCopy(n);
+      expect(c.title).toBe('Ta suite est publiée !');
+      expect(c.text).toBe('Ton dessin rejoint l’histoire. Un autre joueur peut maintenant continuer !');
+      expect(c.note).toMatch(/Mes dessins/);
+    }
   });
 
-  it('histoire terminée', () => {
-    expect(publishedCopy(4)).toEqual({ title: 'Votre histoire est terminée !', text: 'Découvre les quatre cases.' });
+  it('histoire terminée, sans clore les autres chemins', () => {
+    expect(publishedCopy(4)).toEqual({
+      title: 'Votre histoire est terminée !',
+      text: 'Vous avez créé une BD en quatre cases !',
+      note: 'D’autres joueurs peuvent encore imaginer des suites différentes à partir des cases précédentes.',
+    });
+  });
+});
+
+describe('rôle de chaque case', () => {
+  it('donne la consigne de chaque étape', () => {
+    expect(caseRole(1)).toEqual({ position: 'Case 1 sur 4', prompt: 'Imagine le début de l’histoire !', final: false });
+    expect(caseRole(2).prompt).toBe('Dessine ce qui se passe ensuite !');
+    expect(caseRole(3).prompt).toBe('L’histoire approche de sa fin !');
+    expect(caseRole(4)).toEqual({ position: 'Case 4 sur 4', prompt: 'C’est la dernière case ! Imagine la fin de l’histoire.', final: true });
+  });
+
+  it('seule la quatrième case est une conclusion', () => {
+    expect([1, 2, 3, 4].map((n) => caseRole(n).final)).toEqual([false, false, false, true]);
+  });
+
+  it('compose le repère de l’éditeur avec le thème d’origine', () => {
+    expect(briefTitle(3, 'Un boulanger jaloux')).toBe('Case 3 sur 4 · Un boulanger jaloux');
+    expect(briefTitle(1)).toBe('Case 1 sur 4');
+  });
+
+  it('propose « Dessiner la fin » seulement avant la quatrième case', () => {
+    expect([1, 2, 3].map(drawLabel)).toEqual(['Dessiner la suite', 'Dessiner la suite', 'Dessiner la fin']);
   });
 });
 
