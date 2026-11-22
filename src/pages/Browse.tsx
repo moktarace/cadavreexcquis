@@ -176,6 +176,7 @@ export function StoryPage({ id }: { id: string }) {
   const { me } = useGame();
   const path = useAsync(() => cardPath(id), [id]);
   useMarkReplyRead(path.data);
+  const exportTheme = useAsync(() => (path.data ? gameTheme(path.data[0].gameId) : Promise.resolve(null)), [path.data?.[0]?.gameId]).data?.themeText;
   const [mode, setMode] = useState(isNarrow() ? 'flip' : 'board');
   const [showAlt, setShowAlt] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -213,12 +214,12 @@ export function StoryPage({ id }: { id: string }) {
                   <ToyButton
                     variant="soft"
                     icon="download"
-                    onClick={() => exportYonkoma(cards).catch((e) => setMessage(e instanceof Error ? e.message : 'Export impossible'))}
+                    onClick={() => exportYonkoma(cards, exportTheme).catch((e) => setMessage(e instanceof Error ? e.message : 'Export impossible'))}
                   >
                     Exporter en PNG
                   </ToyButton>
                   {typeof navigator.share === 'function' && (
-                    <ToyButton variant="soft" icon="share" onClick={() => shareYonkoma(cards).catch(() => setMessage('Partage annulé ou impossible.'))}>Partager</ToyButton>
+                    <ToyButton variant="soft" icon="share" onClick={() => shareYonkoma(cards, exportTheme).catch(() => setMessage('Partage annulé ou impossible.'))}>Partager</ToyButton>
                   )}
                 </div>
                 {message && <ToyCard tone="error"><p>{message}</p></ToyCard>}
