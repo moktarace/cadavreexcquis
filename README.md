@@ -13,7 +13,7 @@ npm run build      # typecheck + build PWA dans dist/
 npm run preview    # sert le build (service worker actif, installation PWA testable)
 npm run icons      # régénère public/icons/*
 npm run db:check   # exécute les migrations dans PGlite et vérifie règles de jeu et RLS
-npm run db:themes  # régénère supabase/migrations/0003_themes.sql
+npm run db:themes  # imprime l'import SQL de supabase/themes.json (--seed: régénère 0012_theme_bank_seed.sql)
 npm run db:apply   # applique les migrations sur le projet Supabase (SUPABASE_DB_URL requis)
 ```
 
@@ -38,20 +38,22 @@ Trois migrations dans [supabase/migrations](supabase/migrations) :
 
 1. `0001_init.sql` : tables, index, fonctions `join_game` et `publish_contribution`, RLS.
 2. `0002_app.sql` : profil automatique à l'inscription, vue `contribution_cards`, `current_game`, chemins et sous-arbres, buckets de stockage.
-3. `0003_themes.sql` : **généré** (thèmes et parties de chaque semaine 2026–2030, donc aucun changement de semaine à gérer à la main). Regénérer avant fin 2030.
+3. `0003_themes.sql` : historique (anciens thèmes générés et parties 2026–2030). Ne plus le régénérer : la banque de thèmes (0011, 0012) prend le relais pour les semaines à venir.
 4. `0004_notifications.sql` : file d'attente des notifications, regroupement, heures de silence, annonce du nouveau thème, réservation atomique pour l'envoi; remplace `publish_contribution` pour produire les événements.
 5. `0005_png_only.sql` : supprime le projet JSON (politiques du bucket `projects`, type d'asset, colonne `format_version`).
 6. `0006_discovery.sql` : `archive_weeks()` et `archive_highlights()` (lecture des archives sans limite arbitraire, jamais la partie courante ni une partie privée), ordre total de `contribution_subtree`.
 7. `0007_progress.sql` : `contribution_progress()`, ce que les autres ont fait de tes dessins (suites, histoire terminée), pour « Mes dessins ».
 8. `0008_replies.sql` : table `reply_reads` (état « lu » par joueur et par réponse, RLS : on ne lit et n'écrit que le sien, jamais de modification) et `unread_replies()`. Les réponses déjà publiées au moment de la migration sont considérées comme connues.
 10. `0010_rewards.sql` : récompenses collectives (voir « Récompenses et tampons ») : `story_credits`, `reward_events`, `sticker_unlocks`, `sticker_rules`, `reward_config`, `credit_story()` branchée sur `publish_contribution`, rattachement des histoires déjà terminées (`backfill_story_credits()`, exécuté par la migration), `my_progress()`, `my_reward_events()`, `mark_reward_events_seen()`, `admin_revoke_story()` et `sync_reward_rules()`.
+11. `0011_theme_bank.sql` : banque de thèmes (voir « Banque de thèmes »), tirage « barillet » des semaines à venir, fonctions `admin_theme_*`; supprime l'ancien secours `ensure_weekly_game`.
+12. `0012_theme_bank_seed.sql` : **généré** depuis `supabase/themes.json` (`npm run db:themes -- --seed`), premier chargement de la banque.
 
 Mise en place sur un projet Supabase :
 
 1. Authentication > Sign In / Providers : activer **Allow anonymous sign-ins**.
 2. Appliquer les migrations : soit coller les trois fichiers dans l'éditeur SQL du tableau de bord, dans l'ordre; soit ajouter `SUPABASE_DB_URL` dans `.env.local` (Project Settings > Database > Connection string) puis `npm run db:apply`.
 
-`npm run db:check` exécute ces migrations dans PGlite avec des rôles et une RLS simulés (88 vérifications : profil automatique, partie courante, auto-continuation refusée, case 4 finale, projet réutilisé ou d'autrui refusé, insertion directe refusée, projet publié figé, signalements, notifications, archives, pagination déterministe, états de lecture des réponses). Cela ne remplace pas un test sur la vraie base; les accès réellement concurrents et le stockage ne sont pas testés.
+`npm run db:check` exécute ces migrations dans PGlite avec des rôles et une RLS simulés (102 vérifications : profil automatique, partie courante, auto-continuation refusée, case 4 finale, projet réutilisé ou d'autrui refusé, insertion directe refusée, projet publié figé, signalements, notifications, archives, pagination déterministe, états de lecture des réponses). Cela ne remplace pas un test sur la vraie base; les accès réellement concurrents et le stockage ne sont pas testés.
 9. `0009_admin_moderation_expiry.sql` : administrateurs (`admins`, `is_admin()`), fenêtre de vie des thèmes (`starts_at`, `expires_at`, `purged_at`), dessins masqués (`hidden_kind`), signalements (`report_contribution`, blocage des signaleurs), fonctions `admin_*`, nettoyage manuel avec aperçu, file de suppression des fichiers (`storage_deletions`), journal (`purge_log`), purge automatique (`purge_expired_games`, **désarmée par défaut**) et blocage des publications sur un thème expiré (`GAME_EXPIRED`).
 
 
@@ -152,6 +154,17 @@ Réservée aux comptes de la table `admins`. Chaque fonction `admin_*` revérifi
 - **Signalements** : à examiner, retraits confirmés, écartés, abusifs, historique complet ; confirmer le retrait, rétablir, écarter, marquer abusif ou bloquer le signaleur.
 - **Nettoyage** : sélection précise, puis aperçu chiffré (dessins supprimés, emplacements neutres conservés, suites d'autres auteurs préservées, histoires, fichiers, signalements, états de lecture, notifications). « Seulement ces dessins » remplace une case qui a encore des suites par un emplacement neutre (image supprimée, structure conservée) et supprime vraiment les autres ; « Avec toutes leurs suites » est le seul mode qui supprime aussi les dessins des autres participants. La suppression exige de taper SUPPRIMER et que l'aperçu soit encore exact (`PLAN_CHANGED` sinon). Rien n'est jamais supprimé parce qu'il appartient à un thème ou à une histoire que vous avez commencée.
 - **Échéances** : prochaines suppressions par thème, état armé ou non, fichiers en attente, journal des opérations.
+- **Banque de thèmes** : voir ci-dessous.
+
+### Banque de thèmes
+
+Les thèmes ne sont plus générés (plus de combinaison métier + adjectif, personnage, lieu). Ils viennent d'une **banque** de titres courts et ouverts, dans l’esprit des cartons de match d'improvisation, stockée en base (`themes` avec `in_bank`) et initialisée depuis `supabase/themes.json` (212 titres **originaux**, ni copiés d'une banque existante ni présentés comme des thèmes authentiquement joués : chaque thème porte sa provenance, `original`, `imported` ou `referee`). L'objectif est de pouvoir la compléter jusqu'à ≈ 520 titres (dix ans, un par semaine).
+
+**Tirage « barillet ».** Chaque lundi 00:00 (Paris), la partie de la semaine devient active, comme avant : un seul thème partagé, aucune IA, aucun coût. Les semaines à venir (≈ dix ans, `ensure_schedule_weeks`) reçoivent leur thème par `redraw_theme_schedule()` : on retient, parmi les thèmes les moins sortis, celui dont l'empreinte `md5('barillet/v1:' || titre || semaine)` est la plus petite. C'est déterministe, et aucun thème ne revient avant que toute la banque soit passée (puis un nouveau tour commence). Le carton de la semaine suivante (qui commence dans moins de 7 jours) et toutes les semaines commencées sont **figés** : ajouter, corriger, retirer ou importer des thèmes ne modifie jamais un thème déjà attribué, seulement les semaines encore lointaines. Un thème déjà utilisé (ou d'une partie privée) est immuable et ne peut être ni modifié ni retiré. Les anciennes histoires gardent leur thème d'origine jusqu'à leur suppression (2ᵉ lundi suivant leur début).
+
+**Mise en service.** Appliquer 0011 puis 0012 (`npm run db:apply`) ne change pas le thème actif : le nouveau système prend le relais au prochain lundi. Les joueurs ne peuvent lire que les thèmes des semaines commencées : les prochains cartons restent secrets (réservés à l'administration).
+
+**Gérer la banque** sans redéploiement : onglet « Banque de thèmes » de `#/admin` (mêmes droits que le reste de l'administration, revérifiés côté serveur) : consulter tous les thèmes avec leur statut (libre, programmé, utilisé), chercher, ajouter, corriger ou retirer un thème inutilisé, voir les prochains cartons et importer une liste (un titre par ligne ou JSON, avec détection des doublons exacts — accents, majuscules, ponctuation et articles ignorés — et des titres trop proches avant confirmation). Pour de vrais cartons de feuilles d'arbitre, choisir la provenance « Feuille de match (arbitre) ». En ligne de commande : ajouter les titres dans `supabase/themes.json` puis `npm run db:themes` et coller le SQL affiché dans l'éditeur SQL (les doublons sont ignorés).
 
 ### Signalements
 

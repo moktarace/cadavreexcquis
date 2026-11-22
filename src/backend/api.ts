@@ -35,6 +35,11 @@ const MESSAGES: Record<string, string> = {
   REPORT_RATE_LIMITED: 'Trop de signalements en peu de temps, réessaie un peu plus tard.',
   INVALID_CATEGORY: 'Choisis un motif de signalement.',
   FORBIDDEN: 'Accès réservé à l’administration.',
+  THEME_DUPLICATE: 'Ce thème existe déjà dans la banque (ou un titre presque identique).',
+  THEME_INVALID: 'Titre invalide : entre 3 et 60 caractères.',
+  THEME_USED: 'Ce thème a déjà été utilisé : il ne peut plus être modifié ni retiré.',
+  THEME_NOT_FOUND: 'Thème introuvable.',
+  INVALID_SOURCE: 'Provenance inconnue.',
   PLAN_CHANGED: 'Les dessins ont changé depuis l’aperçu : relance l’aperçu avant de confirmer.',
   CONFIRMATION_REQUIRED: 'Confirmation requise.',
   PARENT_IS_FINAL: 'Cette histoire est terminée.',
@@ -660,4 +665,100 @@ export async function markRewardEventsSeen(ids: readonly string[]): Promise<void
   if (ids.length === 0) return;
   const { error } = await db().rpc('mark_reward_events_seen', { p_ids: ids });
   fail(error);
+}
+
+// ───────────── Banque de thèmes (administration) ─────────────
+
+export type ThemeStatus = 'used' | 'scheduled' | 'unused';
+
+export interface BankTheme {
+  id: string;
+  text: string;
+  source: string;
+  note: string | null;
+  inBank: boolean;
+  uses: number;
+  scheduled: number;
+  lastUsedMs: number | null;
+  nextAtMs: number | null;
+  status: ThemeStatus;
+}
+
+export const BANK_PAGE = 50;
+
+export async function adminThemeBank(status: ThemeStatus | null, search: string, offset: number): Promise<{ items: BankTheme[]; total: number }> {
+  const { data, error } = await db().rpc('admin_theme_bank', {
+    p_status: status, p_search: search.trim() || null, p_limit: BANK_PAGE, p_offset: offset,
+  });
+  fail(error);
+  const rows = (data as any[]) ?? [];
+  return {
+    total: rows[0] ? Number(rows[0].total) : 0,
+    items: rows.map((r) => ({
+      id: r.id, text: r.text, source: r.source, note: r.note, inBank: r.in_bank, uses: r.uses, scheduled: r.scheduled,
+      lastUsedMs: ms(r.last_used), nextAtMs: ms(r.next_at), status: r.status,
+    })),
+  };
+}
+
+export interface ScheduledTheme {
+  isoYear: number;
+  isoWeek: number;
+  startsAtMs: number;
+  themeId: string;
+  text: string;
+  source: string;
+  /** Déjà sorti du barillet (commencé ou dans les 7 jours): ne change plus. */
+  frozen: boolean;
+  started: boolean;
+}
+
+export async function adminThemeSchedule(weeks = 12): Promise<ScheduledTheme[]> {
+  const { data, error } = await db().rpc('admin_theme_schedule', { p_weeks: weeks });
+  fail(error);
+  const now = Date.now();
+  return ((data as any[]) ?? []).map((r) => ({
+    isoYear: r.iso_year, isoWeek: r.iso_week, startsAtMs: Date.parse(r.starts_at), themeId: r.theme_id, text: r.text,
+    source: r.source, frozen: r.frozen, started: Date.parse(r.starts_at) <= now,
+  }));
+}
+
+export async function adminThemeAdd(text: string, note?: string): Promise<string> {
+  const { data, error } = await db().rpc('admin_theme_add', { p_text: text, p_source: 'original', p_note: note?.trim() || null });
+  fail(error);
+  return data as string;
+}
+
+export async function adminThemeUpdate(id: string, text: string, note?: string): Promise<void> {
+  const { error } = await db().rpc('admin_theme_update', { p_id: id, p_text: text, p_note: note?.trim() || null });
+  fail(error);
+}
+
+export async function adminThemeRemove(id: string): Promise<void> {
+  const { error } = await db().rpc('admin_theme_remove', { p_id: id });
+  fail(error);
+}
+
+export interface ThemeImportReport {
+  added: number;
+  skipped: { text: string; reason: 'invalid' | 'duplicate' }[];
+}
+
+export async function adminThemeImport(items: readonly { text: string; note?: string }[], source: 'imported' | 'referee'): Promise<ThemeImportReport> {
+  const { data, error } = await db().rpc('admin_theme_import', { p_items: items, p_source: source });
+  fail(error);
+  return data as ThemeImportReport;
+}
+
+/** Tous les titres de la banque (pour repérer les doublons avant un import). */
+export async function adminThemeTexts(): Promise<string[]> {
+  const texts: string[] = [];
+  for (let offset = 0; offset < 5000; offset += 200) {
+    const { data, error } = await db().rpc('admin_theme_bank', { p_status: null, p_search: null, p_limit: 200, p_offset: offset });
+    fail(error);
+    const rows = (data as any[]) ?? [];
+    texts.push(...rows.map((r) => r.text as string));
+    if (rows.length < 200) break;
+  }
+  return texts;
 }

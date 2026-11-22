@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "icons": "node scripts/make-icons.mjs",
     "start": "vite",
-    "db:themes": "vite-node scripts/gen-themes-sql.ts",
+    "db:themes": "vite-node scripts/theme-bank-sql.ts",
     "db:apply": "node scripts/apply-db.mjs",
     "db:check": "node scripts/check-sql.mjs",
     "push:setup": "node scripts/push-setup.mjs",

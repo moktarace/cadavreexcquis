@@ -1,6 +1,18 @@
 import type { GameMoment } from './calendar';
 import { newThemeEvent, type NotificationEvent } from './notifications';
-import { generateTheme, weeklySeed, type Theme } from './theme';
+
+/** Thème d'une partie. En production il vient de la banque (tirage serveur, voir 0011_theme_bank.sql): ici, seule son identité compte. */
+export interface Theme {
+  seed: string;
+  text: string;
+}
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+/** Identifiant stable de la semaine; toutes les salles d'une même semaine partagent le même thème. */
+export function weeklySeed(isoYear: number, isoWeek: number): string {
+  return `case-ludique/${isoYear}-W${pad2(isoWeek)}`;
+}
 
 export const ROOM_CAPACITY = 99;
 export const DEFAULT_ABUSE_LIMIT = { max: 60, windowMs: 3_600_000 };
@@ -127,7 +139,7 @@ export class GameEngine {
       id: this.nextId('game'),
       isoYear: moment.isoYear,
       isoWeek: moment.isoWeek,
-      theme: generateTheme(seed),
+      theme: { seed, text: `Thème ${seed}` },
       seedOverridden: !!seedOverride,
     };
     this.games.push(game);

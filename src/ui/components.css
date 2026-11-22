@@ -461,7 +461,7 @@
 .admin-filters { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
 .admin-filters > :nth-child(n + 3) { grid-column: 1 / -1; }
 .admin-tabs .toy-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-1); overflow: visible; }
-@media (min-width: 560px) { .admin-tabs .toy-tabs { grid-template-columns: repeat(4, 1fr); } }
+@media (min-width: 560px) { .admin-tabs .toy-tabs { grid-template-columns: repeat(5, 1fr); } }
 .admin-bar { position: sticky; top: var(--space-2); z-index: 5; }
 .admin-list { display: grid; gap: var(--space-3); list-style: none; margin: 0; padding: 0; }
 .admin-row { display: grid; grid-template-columns: auto 104px minmax(0, 1fr); gap: var(--space-2); align-items: start; padding: var(--space-2); background: var(--paper); border: var(--line); border-radius: var(--radius-m); }

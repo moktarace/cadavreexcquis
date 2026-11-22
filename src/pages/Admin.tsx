@@ -8,6 +8,7 @@ import { hrefOf } from '../app/router';
 import { REPORT_CATEGORIES, hiddenLabel } from '../domain/moderation';
 import { ToyButton, ToyCard, ToySpinner, ToyTabs, type TabDef } from '../ui';
 import { AdminCleanup, AdminSchedule } from './AdminCleanup';
+import { AdminThemes } from './AdminThemes';
 import { Async, Loading, PageFrame, useAsync } from './shared';
 
 const TABS: readonly TabDef[] = [
@@ -15,6 +16,7 @@ const TABS: readonly TabDef[] = [
   { id: 'reports', label: 'Signalements', icon: 'alert' },
   { id: 'cleanup', label: 'Nettoyage', icon: 'trash' },
   { id: 'schedule', label: 'Échéances', icon: 'clock' },
+  { id: 'themes', label: 'Banque de thèmes', icon: 'book' },
 ];
 
 const STATUS_LABELS: Record<AdminStatusFilter, string> = {
@@ -64,6 +66,7 @@ export function AdminPage() {
         {tab === 'reports' && <ReportsTab />}
         {tab === 'cleanup' && <AdminCleanup ids={[...selected]} onDone={() => setSelected(new Set())} onBack={() => setTab('drawings')} />}
         {tab === 'schedule' && <AdminSchedule />}
+        {tab === 'themes' && <AdminThemes />}
       </div>
     </PageFrame>
   );

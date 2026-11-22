@@ -494,9 +494,9 @@ await check('signalements abusifs: limite horaire et blocage du signaleur', asyn
 // Thèmes de test: A (semaine « 10 ») puis B (semaine « 11 ») dans un futur lointain.
 let gA, gB, rA, rB, a1, a2, a3, b1, notifBefore;
 const themeId = (await db.query('select id from themes limit 1')).rows[0].id;
-// Les parties des tests précédents ne doivent pas être emportées par l'horloge simulée de 2031.
-await db.query('update weekly_games set expires_at = null where iso_year < 2031 and not is_private');
-const mkGame = async (week) => (await db.query('insert into weekly_games(iso_year, iso_week, theme_id) values (2031,$1,$2) returning id', [week, themeId])).rows[0].id;
+// Les parties des tests précédents ne doivent pas être emportées par l'horloge simulée de 2045.
+await db.query('update weekly_games set expires_at = null where iso_year < 2045 and not is_private');
+const mkGame = async (week) => (await db.query('insert into weekly_games(iso_year, iso_week, theme_id) values (2045,$1,$2) returning id', [week, themeId])).rows[0].id;
 const stored = async (userId, label) => { await db.query("insert into storage.objects(bucket_id, name) select 'previews', path from drawing_assets where path like $1 || '/%'", [userId]); return label; };
 await check('arrivée du thème B: le thème A reste intact, consultable et continuable (deuxième semaine)', async () => {
   gA = await mkGame(10); gB = await mkGame(11);
@@ -516,7 +516,7 @@ await check('arrivée du thème B: le thème A reste intact, consultable et cont
 });
 await check('une continuation hérite de l’expiration du thème d’origine, quelle que soit sa date de publication', async () => {
   const [r] = (await db.query('select g.expires_at, c.published_at from contributions c join weekly_games g on g.id=c.game_id where c.id=$1', [a3])).rows;
-  const [w] = (await db.query('select expires_at from game_window(2031, 10)')).rows;
+  const [w] = (await db.query('select expires_at from game_window(2045, 10)')).rows;
   if (r.expires_at.toISOString() !== w.expires_at.toISOString()) throw new Error('échéance différente');
 });
 await check('la purge est désarmée tant qu’elle n’est pas activée explicitement', async () => {
@@ -534,7 +534,7 @@ await check('à l’échéance, un thème expiré disparaît de la lecture et re
   await expectErr('GAME_EXPIRED', () => pub('dex', rA, a3));
   await expectErr('GAME_EXPIRED', () => as(users.dex, 'select join_game($1)', [gA]));
   await expectErr('CONTRIBUTION_NOT_FOUND', () => report('dex', a2));
-  await db.query("update weekly_games set expires_at = (select expires_at from game_window(2031, 10)) where id=$1", [gA]);
+  await db.query("update weekly_games set expires_at = (select expires_at from game_window(2045, 10)) where id=$1", [gA]);
 });
 
 // Fichiers: un objet Storage par dessin publié, comme dans Supabase.
@@ -850,6 +850,139 @@ await check('rattrapage: les histoires publiées avant le déploiement sont cré
   const ev = await events('b2');
   if (ev.some((e) => e.kind === 'story_done') || kinds(ev) !== 'sticker:explosion') throw new Error(kinds(ev));
   if (kinds(await events('b1')) !== 'sticker:explosion,sticker:mustache') throw new Error(kinds(await events('b1')));
+});
+
+
+// ───────────── Banque de thèmes (0011, 0012) ─────────────
+const bankJson = JSON.parse(readFileSync(new URL('../supabase/themes.json', import.meta.url), 'utf8')).themes;
+const bank = async () => (await db.query('select id, text, bank_key from themes where in_bank and retired_at is null order by text')).rows;
+const sched = async () => (await db.query('select g.id, g.iso_year, g.iso_week, g.starts_at, g.theme_id, t.in_bank from weekly_games g join themes t on t.id = g.theme_id where not g.is_private and g.starts_at > now() order by g.starts_at')).rows;
+await db.query('select redraw_theme_schedule()'); // les parties de test des chapitres précédents sont de vieux thèmes à venir: on les rattrape
+const snapshot = async () => (await db.query('select id, theme_id from weekly_games where not is_private order by iso_year, iso_week')).rows.map((r) => `${r.id}:${r.theme_id}`).join();
+
+await check('banque: les titres de themes.json sont chargés, tous marqués « original »', async () => {
+  const b = await bank();
+  if (b.length !== bankJson.length || b.length < 200) throw new Error(`${b.length} titres pour ${bankJson.length}`);
+  const [{ n }] = (await db.query("select count(*)::int n from themes where in_bank and source <> 'original'")).rows;
+  if (n !== 0) throw new Error('provenance');
+});
+await check('banque: la clé de comparaison ignore accents, ponctuation et articles (mêmes exemples que le TypeScript)', async () => {
+  const cases = [['À deux minutes près', 'deux minutes pres'], ['L’invité surprise', 'invite surprise'], ['Le jour où tout a changé', 'jour ou tout change'],
+    ['Ça ne s’invente pas', 'ca ne s invente pas'], ['Le cœur sur la main', 'coeur sur main'], ['Là-haut, tout là-haut', 'haut tout haut'], ['Une mauvaise nouvelle', 'mauvaise nouvelle'], ['Le', 'le']];
+  for (const [t, k] of cases) {
+    const [{ key }] = (await db.query('select theme_key($1) key', [t])).rows;
+    if (key !== k) throw new Error(`${t} → ${key} (attendu ${k})`);
+  }
+});
+await check('tirage: la semaine active et les semaines passées gardent leur thème d’origine, les semaines à venir viennent de la banque', async () => {
+  const [{ n }] = (await db.query('select count(*)::int n from weekly_games g join themes t on t.id=g.theme_id where not g.is_private and g.starts_at <= now() and t.in_bank')).rows;
+  if (n !== 0) throw new Error(`${n} semaines commencées portent un thème de la banque`);
+  const future = await sched();
+  if (future.length < 400 || future.some((w) => !w.in_bank)) throw new Error(`${future.length} semaines, hors banque: ${JSON.stringify(future.filter((w) => !w.in_bank).map((w) => [w.iso_year, w.iso_week]))}`);
+  const [cur] = (await db.query('select t.in_bank from current_game() cg join weekly_games g on g.id = cg.game_id join themes t on t.id = g.theme_id')).rows;
+  if (cur.in_bank !== false) throw new Error('thème actif modifié');
+});
+await check('tirage: aucune répétition avant épuisement de la banque, puis un nouveau tour équilibré', async () => {
+  const future = await sched();
+  const size = (await bank()).length;
+  const first = future.slice(0, size).map((w) => w.theme_id);
+  if (new Set(first).size !== size) throw new Error('un thème revient avant que la banque soit épuisée');
+  const counts = new Map();
+  for (const w of future) counts.set(w.theme_id, (counts.get(w.theme_id) ?? 0) + 1);
+  const values = [...counts.values()];
+  if (Math.max(...values) - Math.min(...values) > 1) throw new Error('tours déséquilibrés');
+});
+await check('tirage: déterministe et stable, relancé il ne change rien', async () => {
+  const before = await snapshot();
+  const changed = (await db.query('select redraw_theme_schedule() n')).rows[0].n;
+  if (changed !== 0 || (await snapshot()) !== before) throw new Error(`${changed} semaines modifiées`);
+});
+await check('administration de la banque: réservée à l’administrateur', async () => {
+  for (const [q, params] of [
+    ['select * from admin_theme_bank()', []], ['select * from admin_theme_schedule()', []],
+    ["select admin_theme_add('Un titre')", []], ['select admin_theme_import($1::jsonb)', ['[]']],
+    ["select admin_theme_update($1, 'Autre')", [users.alice]], ['select admin_theme_remove($1)', [users.alice]],
+  ]) await expectErr('FORBIDDEN', () => as(users.dex, q, params));
+  for (const f of ['redraw_theme_schedule()', "import_theme_bank('[]'::jsonb)", 'ensure_schedule_weeks()'])
+    await expectErr('permission denied', () => as(users.dex, `select ${f}`));
+});
+await check('secret: un joueur ne peut lire que les thèmes des semaines commencées', async () => {
+  const rows = await as(users.dex, 'select id from themes where in_bank');
+  if (rows.length) throw new Error(`${rows.length} thèmes à venir lisibles`);
+  const [g] = await as(users.dex, 'select theme_text from current_game()');
+  if (!g.theme_text) throw new Error('thème actif illisible');
+});
+let addedId;
+await check('banque: ajout, doublon (accents et articles ignorés), titre invalide', async () => {
+  const total = (await bank()).length;
+  addedId = (await as(users.adm, "select admin_theme_add('Les Anges Gardent la Maison', 'original', 'test') id"))[0].id;
+  if ((await bank()).length !== total + 1) throw new Error('non ajouté');
+  await expectErr('THEME_DUPLICATE', () => as(users.adm, "select admin_theme_add('Anges gardent la maison')"));
+  await expectErr('THEME_INVALID', () => as(users.adm, "select admin_theme_add('Ab')"));
+  const existing = (await bank()).find((b) => b.id !== addedId).text;
+  await expectErr('THEME_DUPLICATE', () => as(users.adm, 'select admin_theme_add($1)', [existing.toUpperCase()]));
+});
+await check('banque: le nouveau thème entre dans le tirage sans toucher aux semaines commencées ni au carton de la semaine prochaine', async () => {
+  const nextWeek = (await sched())[0];
+  const size = (await bank()).length;
+  const future = await sched();
+  const hits = future.slice(0, size).filter((w) => w.theme_id === addedId).length;
+  if (hits !== 1) throw new Error(`présent ${hits} fois dans le premier tour`);
+  const again = (await sched())[0];
+  if (again.theme_id !== nextWeek.theme_id) throw new Error('le carton de la semaine prochaine a changé');
+  const [{ n }] = (await db.query('select count(*)::int n from weekly_games g join themes t on t.id=g.theme_id where not g.is_private and g.starts_at <= now() and t.in_bank')).rows;
+  if (n !== 0) throw new Error('semaine commencée modifiée');
+});
+await check('banque: un thème inutilisé se corrige, puis se retire sans trou dans le calendrier', async () => {
+  await as(users.adm, "select admin_theme_update($1, 'Les anges gardent la maison !', 'corrigé')", [addedId]);
+  const [t] = (await db.query('select text, note from themes where id=$1', [addedId])).rows;
+  if (t.text !== 'Les anges gardent la maison !' || t.note !== 'corrigé') throw new Error(JSON.stringify(t));
+  await as(users.adm, 'select admin_theme_remove($1)', [addedId]);
+  if ((await db.query('select 1 from themes where id=$1', [addedId])).rows.length) throw new Error('toujours là');
+  const future = await sched();
+  if (future.some((w) => !w.in_bank || w.theme_id === addedId)) throw new Error('semaine sans thème de la banque');
+});
+await check('banque: un thème déjà utilisé n’est ni modifiable ni retirable, même directement', async () => {
+  const [pick] = (await bank());
+  const [{ id: gid }] = (await db.query("insert into weekly_games(iso_year, iso_week, theme_id, is_private) values (2046, 1, $1, true) returning id", [pick.id])).rows;
+  await expectErr('THEME_USED', () => as(users.adm, "select admin_theme_update($1, 'Autre titre')", [pick.id]));
+  await expectErr('THEME_USED', () => as(users.adm, 'select admin_theme_remove($1)', [pick.id]));
+  await expectErr('THEME_USED', () => db.query("update themes set text='x' where id=$1", [pick.id]));
+  await expectErr('THEME_USED', () => db.query('delete from themes where id=$1', [pick.id]));
+  const used = await as(users.adm, "select id, status from admin_theme_bank('used') where id=$1", [pick.id]);
+  if (used.length !== 1 || used[0].status !== 'used') throw new Error('absent des thèmes utilisés');
+  await db.query('delete from weekly_games where id=$1', [gid]);
+});
+await check('banque: retirer le thème du carton de la semaine prochaine le fait tirer à nouveau', async () => {
+  await as(users.adm, "select admin_theme_add('Un titre éphémère pour la semaine prochaine')");
+  const nextWeek = (await sched())[0];
+  await as(users.adm, 'select admin_theme_remove($1)', [nextWeek.theme_id]);
+  const after = (await sched())[0];
+  if (after.theme_id === nextWeek.theme_id || !after.in_bank) throw new Error('non retiré au sort');
+});
+await check('import: détection des doublons dans la banque et dans la liste, provenance conservée', async () => {
+  const items = [{ text: 'La nuit des chaises' }, { text: 'la NUIT des chaises' }, { text: 'Au pied du mur' }, { text: 'x' }, { text: 'Un vieux carton d’arbitre', note: 'feuille du 12/03' }];
+  const r = (await as(users.adm, "select admin_theme_import($1::jsonb, 'referee') r", [JSON.stringify(items)]))[0].r;
+  const reasons = r.skipped.map((s) => s.reason).sort().join();
+  if (r.added !== 2 || reasons !== 'duplicate,duplicate,invalid') throw new Error(JSON.stringify(r));
+  const [{ n }] = (await db.query("select count(*)::int n from themes where source='referee' and in_bank")).rows;
+  if (n !== 2) throw new Error('provenance non conservée');
+  await expectErr('INVALID_SOURCE', () => as(users.adm, "select admin_theme_import('[]'::jsonb, 'nimporte')"));
+  await db.query("select import_theme_bank($1::jsonb, 'original')", [JSON.stringify(bankJson)]);
+  const second = (await db.query("select import_theme_bank($1::jsonb, 'original') r", [JSON.stringify(bankJson)])).rows[0].r;
+  if (second.added !== 0) throw new Error('l’import de themes.json n’est pas idempotent');
+});
+await check('administration: consulter la banque, les thèmes utilisés et le calendrier des prochains cartons', async () => {
+  const all = await as(users.adm, "select id from admin_theme_bank(null, null, 200, 0)");
+  if (all.length < 150) throw new Error('banque incomplète');
+  const search = await as(users.adm, "select text from admin_theme_bank(null, 'PIED du mur')");
+  if (search.length !== 1) throw new Error('recherche');
+  const used = await as(users.adm, "select text, source from admin_theme_bank('used', null, 200, 0)");
+  if (!used.every((u) => u.source === 'generated')) throw new Error('les thèmes passés viennent de l’ancien générateur');
+  const plan = await as(users.adm, 'select iso_year, iso_week, text, frozen from admin_theme_schedule(8)');
+  const starts = plan.map((p) => p.iso_year * 100 + p.iso_week);
+  if (plan.length < 6 || starts.some((s, i) => i && s <= starts[i - 1])) throw new Error('calendrier '+JSON.stringify(plan.map((p) => [p.iso_year, p.iso_week])));
+  if (!plan.some((p) => p.frozen === false)) throw new Error('aucun carton modifiable');
 });
 
 console.log(results.join('\n'));
