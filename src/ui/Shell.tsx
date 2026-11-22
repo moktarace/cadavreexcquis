@@ -72,7 +72,7 @@ export function Dock({ items, center }: DockProps) {
         <PixelIcon name={it.icon} size={24} />
         {it.badge && <span className="dock__badge" aria-hidden="true" />}
       </span>
-      <span>{it.label}{it.badge && <span className="sr-only"> : nouvelles suites à découvrir</span>}</span>
+      <span>{it.label}{it.badge && <span className="sr-only"> : nouveautés à découvrir</span>}</span>
     </a>
   );
   return (

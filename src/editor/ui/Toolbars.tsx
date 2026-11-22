@@ -1,7 +1,10 @@
+import { useState } from 'react';
+import { useRewards } from '../../app/rewards';
+import { REWARD_CONFIG, STICKERS, unlockCondition, unlockedSet } from '../../domain/stickers';
 import { PALETTE } from '../palette';
 import { ERASER_SIZES, PEN_SIZES, TEXTURES, type Texture } from '../raster';
 import type { EditorSession, Tool } from '../session';
-import { ColorSwatch, ToyButton, type IconName } from '../../ui';
+import { ColorSwatch, PixelIcon, StickerArt, ToyButton, type IconName } from '../../ui';
 
 const TOOLS: { id: Tool; label: string; title: string; icon: IconName }[] = [
   { id: 'pen', label: 'Stylo', title: 'Stylo', icon: 'pencil' },
@@ -11,6 +14,7 @@ const TOOLS: { id: Tool; label: string; title: string; icon: IconName }[] = [
   { id: 'lasso', label: 'Lasso', title: 'Sélection libre', icon: 'lasso' },
   { id: 'move', label: 'Bouger', title: 'Déplacer la sélection ou le dessin', icon: 'move' },
   { id: 'hand', label: 'Main', title: 'Déplacer la vue', icon: 'hand' },
+  { id: 'stamp', label: 'Tampons', title: 'Poser un tampon', icon: 'star' },
 ];
 
 const ESSENTIAL: Tool[] = ['pen', 'eraser'];
@@ -89,7 +93,45 @@ function TexturePicker({ value, onPick }: { value: Texture; onPick: (t: Texture)
   );
 }
 
-export function OptionsRow({ session }: { session: EditorSession }) {
+/** Tampons de départ et récompenses: les verrouillés disent comment les obtenir et ne se sélectionnent pas. */
+function StampTray({ session, onPicked }: { session: EditorSession; onPicked?: () => void }) {
+  const { progress } = useRewards();
+  const unlocked = unlockedSet(progress.stickers);
+  const [hint, setHint] = useState<string | null>(null);
+  const current = session.floating?.stamp?.id;
+  return (
+    <div className="stamp-tray">
+      <div className="stamp-tray__row" role="group" aria-label="Tampons">
+        {STICKERS.map((def) => {
+          const open = unlocked.has(def.id);
+          return (
+            <button
+              key={def.id}
+              type="button"
+              className={`stamp-btn ${current === def.id ? 'is-selected' : ''} ${open ? '' : 'is-locked'}`}
+              aria-disabled={!open}
+              aria-pressed={current === def.id}
+              aria-label={open ? def.name : `${def.name}, verrouillé : ${unlockCondition(def)}`}
+              title={open ? def.name : unlockCondition(def)}
+              onClick={() => {
+                if (!open) return setHint(`${def.name} : ${unlockCondition(def).toLowerCase()}.`);
+                const placed = session.beginStamp(def.id);
+                setHint(placed ? null : 'Tu as posé tous les tampons de cette case. Annule-en un pour en changer.');
+                if (placed) onPicked?.();
+              }}
+            >
+              <StickerArt def={def} size={3} locked={!open} />
+              {!open && <PixelIcon name="lock" size={14} className="stamp-btn__lock" />}
+            </button>
+          );
+        })}
+      </div>
+      <p className="hint" role="status">{hint ?? `Choisis un tampon : ${session.stampsPlaced} posé${session.stampsPlaced > 1 ? 's' : ''} sur ${session.maxStamps} possibles.`}</p>
+    </div>
+  );
+}
+
+export function OptionsRow({ session, onStampPicked }: { session: EditorSession; onStampPicked?: () => void }) {
   const selectionTool = session.tool === 'rect' || session.tool === 'lasso' || session.tool === 'move';
   return (
     <div className="ed-options">
@@ -117,6 +159,7 @@ export function OptionsRow({ session }: { session: EditorSession }) {
           <ToyButton variant="soft" size="s" iconOnly icon="rotate" aria-label="Rotation d'un quart de tour" title="Rotation d'un quart de tour" onClick={() => session.rotate()} />
         </>
       )}
+      {session.tool === 'stamp' && <StampTray session={session} onPicked={onStampPicked} />}
       {session.tool === 'hand' && <span className="hint">Fais glisser pour déplacer. Deux doigts : zoom.</span>}
     </div>
   );
@@ -137,5 +180,18 @@ export function ColorRow({ session }: { session: EditorSession }) {
         ))}
       </div>
     </div>
+  );
+}
+
+/** Taille du tampon en cours de placement, par multiples entiers (jamais de flou). */
+export function StampSize({ session }: { session: EditorSession }) {
+  const scales = REWARD_CONFIG.stampScales;
+  const scale = session.floating?.stamp?.scale ?? session.stampScale;
+  const i = scales.indexOf(scale);
+  return (
+    <>
+      <ToyButton variant="soft" size="s" iconOnly icon="minus" aria-label="Tampon plus petit" disabled={i <= 0} onClick={() => session.setStampScale(scales[i - 1])} />
+      <ToyButton variant="soft" size="s" iconOnly icon="plus" aria-label="Tampon plus grand" disabled={i >= scales.length - 1} onClick={() => session.setStampScale(scales[i + 1])} />
+    </>
   );
 }

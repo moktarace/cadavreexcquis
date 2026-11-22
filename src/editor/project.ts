@@ -7,6 +7,8 @@ import { PIXELS } from './palette';
  */
 export interface Project {
   pixels: Uint8Array;
+  /** Tampons déjà posés sur cette version du dessin (suit annuler/rétablir). */
+  stamps?: number;
 }
 
 export function newProject(): Project {

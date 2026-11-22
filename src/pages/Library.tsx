@@ -9,6 +9,7 @@ import type { Progress } from '../domain/play';
 import { EmptyState, Mascot, PixelIcon, StoryThumbnail, ToyButton, ToyCard, ToySpinner } from '../ui';
 import { Async, CardLink, Loading, PageFrame, plural, useAsync } from './shared';
 import { ExpiryHint, MineExpiry } from './Expiry';
+import { CollectionCard, FinishedShelf, RewardNewsSection } from './Rewards';
 import { ShareButton } from './ShareButton';
 import { cardAlt } from '../domain/moderation';
 
@@ -149,7 +150,9 @@ export function MinePage() {
         {(cards) => {
           if (cards.length === 0) {
             return (
-              <EmptyState
+              <div className="stack">
+                <RewardNewsSection />
+                <EmptyState
                 title="Tu n’as pas encore dessiné !"
                 mascot={<Mascot size={84} />}
                 action={
@@ -161,6 +164,8 @@ export function MinePage() {
               >
                 Commence une histoire ou continue celle de quelqu’un.
               </EmptyState>
+                <CollectionCard />
+              </div>
             );
           }
           const mood = replies.loaded ? mineMood(cards, replies.unread.length) : replies.hasUnread ? 'discover' : 'pending';
@@ -191,8 +196,11 @@ export function MinePage() {
                   )}
                 </section>
               )}
+              <RewardNewsSection />
               {mood === 'allRead' && <ToyCard tone="green"><p className="plain-text"><strong>Tu as découvert toutes les nouvelles suites !</strong></p></ToyCard>}
               {mood === 'waiting' && <ToyCard tone="lavender"><p className="plain-text"><strong>Tes dessins attendent que d’autres joueurs inventent la suite !</strong></p></ToyCard>}
+              <CollectionCard />
+              <FinishedShelf />
               <section className="stack" aria-labelledby="all-title">
                 <h2 className="section-title" id="all-title"><span>Tous mes dessins</span></h2>
                 {visible.map((c) => (

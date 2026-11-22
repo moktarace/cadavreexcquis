@@ -2,12 +2,14 @@ import { GameProvider } from './app/game';
 import { hrefOf, useRoute, type Route } from './app/router';
 import { useOnline } from './app/hooks';
 import { RepliesProvider, useReplies } from './app/replies';
+import { RewardsProvider, useRewards } from './app/rewards';
 import { EditorScreen } from './editor/ui/EditorScreen';
 import { CasePage, StoryPage, TreePage } from './pages/Browse';
 import { BrowsePage } from './pages/Continue';
 import { PlayPage } from './pages/Play';
 import { PublishedPage } from './pages/Published';
 import { ReplyPage } from './pages/Reply';
+import { FinishedPage } from './pages/Rewards';
 import { HomePage } from './pages/Home';
 import { ReadPage } from './pages/Read';
 import { ArchivesPage, MinePage, WeekPage } from './pages/Library';
@@ -27,7 +29,7 @@ interface NavEntry {
 const PLAY: NavEntry = { id: 'play', label: 'Jouer', icon: 'pencil', route: { name: 'play', startId: null }, active: ['play', 'browse'] };
 const SIDES: NavEntry[] = [
   { id: 'read', label: 'Lire', icon: 'book', route: { name: 'read' }, active: ['read', 'archives', 'week', 'case', 'story', 'tree'] },
-  { id: 'mine', label: 'Mes dessins', icon: 'star', route: { name: 'mine' }, active: ['mine', 'reply'] },
+  { id: 'mine', label: 'Mes dessins', icon: 'star', route: { name: 'mine' }, active: ['mine', 'reply', 'finished'] },
 ];
 const toItem = (n: NavEntry, current: Route['name'], badge = false): DockItem => ({ id: n.id, label: n.label, icon: n.icon, href: hrefOf(n.route), active: n.active.includes(current), badge });
 
@@ -47,6 +49,8 @@ function Page({ route }: { route: Route }) {
       return <CasePage id={route.id} />;
     case 'reply':
       return <ReplyPage id={route.id} />;
+    case 'finished':
+      return <FinishedPage id={route.id} />;
     case 'story':
       return <StoryPage id={route.id} />;
     case 'tree':
@@ -70,6 +74,7 @@ function Screens() {
   const route = useRoute();
   const online = useOnline();
   const { hasUnread } = useReplies();
+  const rewards = useRewards();
 
   return route.name === 'draw' ? (
     <EditorScreen key={route.parentId ?? 'root'} parentId={route.parentId} />
@@ -83,7 +88,7 @@ function Screens() {
       <main>
         <Page route={route} />
       </main>
-      <Dock items={SIDES.map((n) => toItem(n, route.name, n.id === 'mine' && hasUnread))} center={toItem(PLAY, route.name)} />
+      <Dock items={SIDES.map((n) => toItem(n, route.name, n.id === 'mine' && (hasUnread || rewards.hasNews)))} center={toItem(PLAY, route.name)} />
     </div>
   );
 }
@@ -92,7 +97,9 @@ export function App() {
   return (
     <GameProvider>
       <RepliesProvider>
-        <Screens />
+        <RewardsProvider>
+          <Screens />
+        </RewardsProvider>
       </RepliesProvider>
     </GameProvider>
   );

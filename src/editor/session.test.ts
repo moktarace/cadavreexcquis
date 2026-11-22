@@ -242,3 +242,174 @@ describe('tiroir d’outils', () => {
     for (const tool of ['fill', 'rect', 'lasso', 'move', 'hand'] as const) expect(closesDrawerOnDraw(tool)).toBe(false);
   });
 });
+
+describe('tampons', () => {
+  const cell = (s: EditorSession, x: number, y: number) => s.current().pixels[y * WIDTH + x];
+
+  it('place l’aperçu au centre sans toucher au dessin avant validation', () => {
+    const s = new EditorSession();
+    expect(s.beginStamp('heart')).toBe(true);
+    expect(s.tool).toBe('stamp');
+    expect(s.floating?.stamp?.id).toBe('heart');
+    expect(s.project.pixels.some((p) => p !== 0)).toBe(false);
+    expect(s.current().pixels.some((p) => p !== 0)).toBe(true);
+    expect(s.canUndo).toBe(true);
+  });
+
+  it('refuse un tampon inconnu', () => {
+    expect(new EditorSession().beginStamp('nimporte')).toBe(false);
+  });
+
+  it('se déplace au stylet: dans le tampon on le tire, à côté il saute sous le pointeur', () => {
+    const s = new EditorSession();
+    s.beginStamp('bolt', 2);
+    const f = s.floating!;
+    const left = f.content.x;
+    const top = f.content.y;
+    s.pointerDown(left + 4, top + 4);
+    s.pointerMove(left + 14, top + 24);
+    s.pointerUp();
+    expect(s.floating!.dx).toBe(10);
+    expect(s.floating!.dy).toBe(20);
+
+    s.pointerDown(300, 220);
+    s.pointerUp();
+    const w = s.floating!.content.w;
+    const h = s.floating!.content.h;
+    expect(s.floating!.content.x + s.floating!.dx + w / 2).toBeCloseTo(300, 0);
+    expect(s.floating!.content.y + s.floating!.dy + h / 2).toBeCloseTo(220, 0);
+  });
+
+  it('se fusionne dans l’image à la validation: pixels de palette, une seule entrée d’historique', () => {
+    const s = new EditorSession();
+    s.beginStamp('heart', 1);
+    const f = s.floating!;
+    const spot = f.content.x + 2;
+    s.commitFloating();
+    expect(s.floating).toBeNull();
+    expect(s.project.stamps).toBe(1);
+    const painted = [...s.project.pixels].filter((p) => p !== 0);
+    expect(painted.length).toBeGreaterThan(40);
+    expect(painted.every((p) => p >= 0 && p <= 5)).toBe(true);
+    expect(s.project.pixels.length).toBe(320 * 240);
+    expect(spot).toBeGreaterThan(0);
+    s.undo();
+    expect(s.project.pixels.some((p) => p !== 0)).toBe(false);
+    expect(s.project.stamps ?? 0).toBe(0);
+    s.redo();
+    expect(s.project.stamps).toBe(1);
+    expect([...s.project.pixels].filter((p) => p !== 0)).toEqual(painted);
+  });
+
+  it('le blanc d’un tampon recouvre le dessin, le transparent le laisse intact', () => {
+    const s = new EditorSession();
+    s.update({ pen: { size: 5, shape: 'round', texture: 'solid' } });
+    draw(s, [10, 120], [310, 120]);
+    expect(cell(s, 160, 120)).toBe(1);
+    s.beginStamp('ghost', 1);
+    const f = s.floating!;
+    s.commitFloating();
+    // le fantôme est blanc au milieu du corps: l'encre dessous disparaît; hors du tampon elle reste
+    const cx = f.content.x + Math.floor(f.content.w / 2);
+    const cy = f.content.y + 8;
+    expect(s.project.pixels[cy * WIDTH + cx]).toBe(0);
+    expect(cell(s, 12, 120)).toBe(1);
+  });
+
+  it('annuler pendant le placement abandonne le tampon sans rien changer', () => {
+    const s = new EditorSession();
+    s.beginStamp('star');
+    s.undo();
+    expect(s.floating).toBeNull();
+    expect(s.canUndo).toBe(false);
+    expect(s.stampsPlaced).toBe(0);
+  });
+
+  it('limite à trois tampons par case sans empêcher de dessiner, et annuler en libère un', () => {
+    const s = new EditorSession();
+    for (let i = 0; i < 3; i++) {
+      expect(s.beginStamp('star', 1)).toBe(true);
+      s.commitFloating();
+    }
+    expect(s.stampsPlaced).toBe(3);
+    expect(s.canStamp).toBe(false);
+    expect(s.beginStamp('star')).toBe(false);
+    s.setTool('pen');
+    draw(s, [5, 5], [50, 5]);
+    expect(s.project.pixels[5 * WIDTH + 20]).toBe(1);
+    expect(s.stampsPlaced).toBe(3);
+    s.undo();
+    s.undo();
+    expect(s.stampsPlaced).toBe(2);
+    expect(s.canStamp).toBe(true);
+  });
+
+  it('la limite est un réglage', () => {
+    const s = new EditorSession();
+    s.maxStamps = 1;
+    s.beginStamp('star');
+    s.commitFloating();
+    expect(s.beginStamp('star')).toBe(false);
+  });
+
+  it('change de taille par multiples entiers en gardant son centre', () => {
+    const s = new EditorSession();
+    s.beginStamp('crown', 2);
+    const f = s.floating!;
+    const cx = f.content.x + f.content.w / 2;
+    const w2 = f.content.w;
+    s.setStampScale(4);
+    expect(s.floating!.content.w).toBe(w2 * 2);
+    expect(s.floating!.content.x + s.floating!.content.w / 2).toBeCloseTo(cx, 0);
+    s.setStampScale(7);
+    expect(s.floating!.stamp!.scale).toBe(4);
+    s.commitFloating();
+    expect([...s.project.pixels].every((p) => p <= 5)).toBe(true);
+  });
+
+  it('dessiner au stylo pendant un placement le valide comme le fait déjà le déplacement', () => {
+    const s = new EditorSession();
+    s.beginStamp('heart', 1);
+    s.setTool('pen');
+    s.pointerDown(5, 5);
+    s.pointerUp();
+    expect(s.floating).toBeNull();
+    expect(s.project.stamps).toBe(1);
+  });
+
+  it('un tampon peut dépasser le bord sans erreur: la partie hors image est ignorée', () => {
+    const s = new EditorSession();
+    s.beginStamp('speed', 4);
+    s.pointerDown(0, 0);
+    s.pointerUp();
+    expect(() => s.commitFloating()).not.toThrow();
+    expect(s.project.pixels.length).toBe(320 * 240);
+  });
+});
+
+describe('réactivité', () => {
+  it('déplacer un tampon reste aussi léger qu’un trait: 300 déplacements en moins d’une demi-seconde', () => {
+    const s = new EditorSession();
+    s.beginStamp('explosion', 4);
+    s.pointerDown(160, 120);
+    const start = performance.now();
+    for (let i = 0; i < 300; i++) {
+      s.pointerMove(160 + (i % 50), 120 + (i % 30));
+      s.current();
+    }
+    s.pointerUp();
+    expect(performance.now() - start).toBeLessThan(500);
+  });
+
+  it('le trait au stylo ne coûte rien de plus quand des tampons ont été posés', () => {
+    const s = new EditorSession();
+    s.beginStamp('star');
+    s.commitFloating();
+    s.setTool('pen');
+    s.pointerDown(10, 10, 0.6);
+    for (let i = 0; i < 200; i++) s.pointerMove(10 + i, 10 + (i % 7), 0.6);
+    s.pointerUp();
+    expect(s.project.stamps).toBe(1);
+    expect(s.project.pixels[10 * WIDTH + 60]).toBe(1);
+  });
+});

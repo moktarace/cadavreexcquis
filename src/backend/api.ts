@@ -3,6 +3,7 @@ import { DECK_ORDER, DECK_PAGE_SIZE, pageBounds, type DeckFilter } from '../doma
 import type { UnreadReply } from '../domain/discoveries';
 import { hiddenPlaceholder, type HiddenKind, type ReportCategory } from '../domain/moderation';
 import type { Progress } from '../domain/play';
+import type { RewardEvent, RewardProgress } from '../domain/rewards';
 import type { Project } from '../editor/project';
 import { previewPng } from '../editor/export';
 import { supabase } from './client';
@@ -635,4 +636,28 @@ export async function purgeFilesNow(): Promise<{ removed: number; failed: number
   const { data, error } = await db().functions.invoke('purge', { method: 'POST' });
   if (error) throw new ApiError('PURGE', 'La suppression des fichiers sera reprise automatiquement.');
   return { removed: data?.removed ?? 0, failed: data?.failed ?? 0 };
+}
+
+// ───────────── Récompenses collectives (calculées par le serveur) ─────────────
+
+export async function myProgress(): Promise<RewardProgress> {
+  const { data, error } = await db().rpc('my_progress');
+  fail(error);
+  const r = ((data as any[]) ?? [])[0] ?? { completed: 0, inspired: 0, stickers: [] };
+  return { completed: r.completed, inspired: r.inspired, stickers: r.stickers ?? [] };
+}
+
+export async function myRewardEvents(opts: { unseen?: boolean; kind?: RewardEvent['kind']; limit?: number } = {}): Promise<RewardEvent[]> {
+  const { data, error } = await db().rpc('my_reward_events', { p_unseen: opts.unseen ?? true, p_kind: opts.kind ?? null, p_limit: opts.limit ?? 50 });
+  fail(error);
+  return ((data as any[]) ?? []).map((e) => ({
+    id: e.id, kind: e.kind, endId: e.end_id, rootId: e.root_id, ref: e.ref, n: e.n, expired: e.expired, createdAt: Date.parse(e.created_at), seen: e.seen,
+  }));
+}
+
+/** Idempotent: une nouveauté déjà découverte (autre appareil, double envoi) reste découverte. */
+export async function markRewardEventsSeen(ids: readonly string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const { error } = await db().rpc('mark_reward_events_seen', { p_ids: ids });
+  fail(error);
 }

@@ -13,6 +13,7 @@ describe('routeur par hash', () => {
     ['#/published/p1', { name: 'published', id: 'p1' }],
     ['#/case/abc-123', { name: 'case', id: 'abc-123' }],
     ['#/reply/r-1', { name: 'reply', id: 'r-1' }],
+    ['#/finished/f-1', { name: 'finished', id: 'f-1' }],
     ['#/story/xyz', { name: 'story', id: 'xyz' }],
     ['#/draw', { name: 'draw', parentId: null }],
     ['#/draw/d1', { name: 'draw', parentId: 'd1' }],
@@ -45,6 +46,7 @@ describe('routeur par hash', () => {
       { name: 'browse' },
       { name: 'published', id: 'p2' },
       { name: 'reply', id: 'r2' },
+      { name: 'finished', id: 'f2' },
     ];
     for (const r of routes) expect(parseHash(hrefOf(r))).toEqual(r);
   });

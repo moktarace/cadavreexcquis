@@ -7,3 +7,5 @@ export { Logo, ScreenHeader, Dock } from './Shell';
 export type { DockItem } from './Shell';
 export { Swiper } from './Swiper';
 export { ThreadPeek } from './Thread';
+export { StickerArt } from './StickerArt';
+export { Confetti } from './Confetti';

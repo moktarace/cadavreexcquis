@@ -693,4 +693,163 @@ await check('journal: chaque opération laisse une trace minimale', async () => 
   if (b.pending !== 0) throw new Error('file non vide');
 });
 
+
+// ───────────── Récompenses collectives et tampons (0010) ─────────────
+for (const n of ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'm1', 'm2', 'm3', 'm4', 'r1', 'r2', 'r3', 's1', 's2', 's3', 's4', 'e1', 'e2', 'e3', 'e4', 'b1', 'b2', 'b3', 'b4'])
+  users[n] = (await db.query('insert into auth.users default values returning id')).rows[0].id;
+const prog = async (u) => (await as(users[u], 'select completed, inspired, stickers from my_progress()'))[0];
+const events = (u, unseen = true, kind = null) => as(users[u], 'select id, kind, end_id, root_id, ref, n, expired, seen from my_reward_events($1, $2)', [unseen, kind]);
+const kinds = (rows) => rows.map((r) => r.kind + (r.ref ? ':' + r.ref : '')).sort().join();
+const chain = async (authors, room = aliceRoom) => {
+  const ids = [];
+  for (const [i, a] of authors.entries()) ids.push(await pub(a, room, i === 0 ? null : ids[i - 1]));
+  return ids;
+};
+
+let ends1;
+await check('récompenses: quatre auteurs différents, tous récompensés, l’auteur de la case 1 aussi comme inspirateur', async () => {
+  ends1 = await chain(['p1', 'p2', 'p3', 'p4']);
+  for (const u of ['p1', 'p2', 'p3', 'p4']) if ((await prog(u)).completed !== 1) throw new Error(`${u} completed`);
+  if ((await prog('p1')).inspired !== 1 || (await prog('p2')).inspired !== 0) throw new Error('inspired');
+});
+await check('récompenses: aucun crédit pour une branche inachevée', async () => {
+  await chain(['r1', 'r2', 'r3']);
+  for (const u of ['r1', 'r2', 'r3']) {
+    const p = await prog(u);
+    if (p.completed !== 0 || p.inspired !== 0 || (await events(u)).length) throw new Error(`${u} ${JSON.stringify(p)}`);
+  }
+});
+await check('récompenses: un auteur présent deux fois dans le chemin ne reçoit qu’une récompense', async () => {
+  await chain(['p5', 'p6', 'p5', 'p7']);
+  const p5 = await prog('p5');
+  if (p5.completed !== 1 || p5.inspired !== 1) throw new Error(JSON.stringify(p5));
+  const [{ n }] = (await db.query("select count(*)::int n from story_credits where user_id=$1 and kind='participant'", [users.p5])).rows;
+  if (n !== 1) throw new Error(`${n} crédits`);
+  const e = await events('p5');
+  if (e.filter((x) => x.kind === 'story_done').length !== 1) throw new Error('une seule nouveauté d’histoire terminée');
+});
+let q = {};
+await check('récompenses: plusieurs fins issues de la même case 1, chacune comptée une seule fois', async () => {
+  const [c1, c2, c3] = await chain(['q1', 'q2', 'q3']);
+  const ends = [await pub('q4', aliceRoom, c3), await pub('q5', aliceRoom, c3), await pub('q6', aliceRoom, c3)];
+  q = { c1, ends };
+  const p1 = await prog('q1');
+  if (p1.completed !== 3 || p1.inspired !== 3) throw new Error(JSON.stringify(p1));
+  const p3 = await prog('q3');
+  if (p3.completed !== 3 || p3.inspired !== 0) throw new Error(JSON.stringify(p3));
+  const [{ n }] = (await db.query("select count(*)::int n from story_credits where root_id=$1 and kind='inspired'", [c1])).rows;
+  if (n !== 3) throw new Error(`${n} fins pour la case 1`);
+  const inspired = (await events('q1')).filter((e) => e.kind === 'inspired');
+  if (inspired.length !== 1 || inspired[0].n !== 3) throw new Error(JSON.stringify(inspired));
+});
+await check('récompenses: traitement répété du même événement, aucune récompense en double', async () => {
+  const before = await prog('q1');
+  const evBefore = (await events('q1')).length;
+  for (const end of q.ends) {
+    const again = (await db.query('select credit_story($1) n', [end])).rows[0].n;
+    if (again !== 0) throw new Error(`recrédité: ${again}`);
+  }
+  const after = await prog('q1');
+  if (JSON.stringify(before) !== JSON.stringify(after) || (await events('q1')).length !== evBefore) throw new Error('double comptage');
+});
+await check('récompenses: un joueur avec plusieurs premières cases cumule ses histoires inspirées', async () => {
+  const a = await chain(['m1', 'm2', 'm3', 'm4']);
+  const b = await chain(['m1', 'm3', 'm2', 'm4']);
+  const p = await prog('m1');
+  if (p.inspired !== 2 || p.completed !== 2) throw new Error(JSON.stringify(p));
+  const per = (await db.query("select root_id, count(*)::int n from story_credits where user_id=$1 and kind='inspired' group by root_id", [users.m1])).rows;
+  if (per.length !== 2 || per.some((r) => r.n !== 1) || !per.some((r) => r.root_id === a[0]) || !per.some((r) => r.root_id === b[0])) throw new Error(JSON.stringify(per));
+});
+await check('tampons: débloqués aux bons seuils, plusieurs à la fois, une seule nouveauté par tampon', async () => {
+  const s = (await prog('p4')).stickers.join();
+  if (s !== 'explosion') throw new Error(`p4: ${s}`);
+  if ((await prog('p1')).stickers.slice().sort().join() !== 'explosion,mustache') throw new Error('p1');
+  const q1 = (await prog('q1')).stickers.slice().sort().join();
+  if (q1 !== 'explosion,glasses,mustache,speed') throw new Error(`q1: ${q1}`);
+  const ev = kinds((await events('q1')).filter((e) => e.kind === 'sticker'));
+  if (ev !== 'sticker:explosion,sticker:glasses,sticker:mustache,sticker:speed') throw new Error(ev);
+  if ((await prog('q4')).stickers.includes('smoke')) throw new Error('seuil de 5 non atteint');
+});
+await check('tampons: changer un seuil débloque aux joueurs concernés sans jamais retirer un tampon acquis', async () => {
+  const rules = [{ id: 'smoke', family: 'collective', threshold: 3 }];
+  const n = (await db.query('select sync_reward_rules($1::jsonb, $2::int[]) n', [JSON.stringify(rules), '{3,5,10}'])).rows[0].n;
+  if (n < 1 || !(await prog('q1')).stickers.includes('smoke')) throw new Error('smoke non débloqué à 3');
+  await db.query("select sync_reward_rules($1::jsonb, '{3,5,10}'::int[])", [JSON.stringify([{ id: 'smoke', family: 'collective', threshold: 50 }])]);
+  if (!(await prog('q1')).stickers.includes('smoke')) throw new Error('un tampon acquis a été retiré');
+  await db.query("select sync_reward_rules($1::jsonb, '{3,5,10}'::int[])", [JSON.stringify([{ id: 'smoke', family: 'collective', threshold: 5 }])]);
+});
+await check('récompenses: lecture et écriture réservées au serveur, chacun ne voit que les siennes', async () => {
+  if ((await as(users.p2, 'select * from story_credits where user_id=$1', [users.p1])).length) throw new Error('crédits d’autrui visibles');
+  if ((await as(users.p2, 'select * from reward_events where user_id=$1', [users.p1])).length) throw new Error('nouveautés d’autrui visibles');
+  await expectErr('row-level security', () => as(users.p2, "insert into story_credits(end_id, user_id, kind, root_id) values ($1,$2,'participant',$1)", [ends1[3], users.p2]));
+  await expectErr('row-level security', () => as(users.p2, "insert into sticker_unlocks(user_id, sticker_id) values ($1,'ghost')", [users.p2]));
+  await expectErr('row-level security', () => as(users.p2, "insert into reward_events(user_id, kind, dedupe_key) values ($1,'sticker','x')", [users.p2]));
+  for (const f of ['credit_story($1)', 'evaluate_unlocks($1)', 'backfill_story_credits()', 'sync_reward_rules(\'[]\'::jsonb, \'{3}\'::int[])'])
+    await expectErr('permission denied', () => as(users.p2, `select ${f}`, f.includes('$1') ? [ends1[3]] : []));
+  const [mine] = await events('p1');
+  if ((await as(users.p2, 'select mark_reward_events_seen($1::uuid[]) n', [`{${mine.id}}`]))[0].n !== 0) throw new Error('marqué par un autre joueur');
+  if ((await as(users.p1, 'select mark_reward_events_seen($1::uuid[]) n', [`{${mine.id}}`]))[0].n !== 1) throw new Error('non marqué');
+  if ((await as(users.p1, 'select mark_reward_events_seen($1::uuid[]) n', [`{${mine.id}}`]))[0].n !== 0) throw new Error('non idempotent');
+  if ((await events('p1')).some((e) => e.id === mine.id)) throw new Error('toujours non lu');
+});
+
+let modEnd;
+await check('modération: une histoire contenant un dessin masqué ne produit aucune récompense, puis en produit une une fois rétablie', async () => {
+  const [s1, s2, s3] = await chain(['s1', 's2', 's3']);
+  await as(users.s4, "select report_contribution($1, 'spam', null)", [s2]);
+  modEnd = await pub('s4', aliceRoom, s3);
+  if ((await prog('s1')).completed !== 0 || (await prog('s4')).completed !== 0) throw new Error('récompensé malgré le masquage');
+  await as(users.adm, 'select admin_set_hidden($1::uuid[], false)', [`{${s2}}`]);
+  for (const u of ['s1', 's2', 's3', 's4']) if ((await prog(u)).completed !== 1) throw new Error(`${u} non crédité après rétablissement`);
+  if ((await prog('s1')).inspired !== 1) throw new Error('inspired');
+});
+await check('modération: l’administration peut retirer les récompenses d’une histoire abusive, définitivement', async () => {
+  await expectErr('FORBIDDEN', () => as(users.s1, 'select admin_revoke_story($1)', [modEnd]));
+  const n = (await as(users.adm, 'select admin_revoke_story($1) n', [modEnd]))[0].n;
+  if (n !== 5) throw new Error(`${n} crédits retirés`);
+  if ((await prog('s1')).completed !== 0) throw new Error('crédit conservé');
+  if ((await db.query('select credit_story($1) n', [modEnd])).rows[0].n !== 0) throw new Error('recrédité');
+  if (!(await prog('s1')).stickers.includes('explosion')) throw new Error('les tampons acquis doivent rester');
+});
+
+let gE, eEnd, eRoot;
+await check('éphémère: après l’expiration du thème, récompenses et tampons restent acquis, les nouveautés sont marquées disparues', async () => {
+  gE = await mkGame(40);
+  const rE = await room(gE);
+  eRoot = await plant(gE, rE, 'e1', 1, null);
+  const e2 = await pub('e2', rE, eRoot);
+  const e3 = await pub('e3', rE, e2);
+  eEnd = await pub('e4', rE, e3);
+  for (const u of ['e1', 'e2', 'e3', 'e4']) if ((await prog(u)).completed !== 1) throw new Error(`${u} avant`);
+  const before = JSON.stringify(await prog('e1'));
+  await db.query('select enable_expiry_purge()');
+  const [gw] = (await db.query('select expires_at from weekly_games where id=$1', [gE])).rows;
+  const res = (await db.query('select purge_expired_games($1) r', [new Date(gw.expires_at.getTime() + 1000)])).rows[0].r;
+  if (res.purged < 1 || res.errors !== 0) throw new Error(JSON.stringify(res));
+  if (JSON.stringify(await prog('e1')) !== before) throw new Error('compteur modifié par l’expiration');
+  const [{ n }] = (await db.query('select count(*)::int n from contributions where game_id=$1', [gE])).rows;
+  if (n !== 0) throw new Error('contributions restantes');
+  const unseen = await events('e1');
+  if (!unseen.every((e) => e.kind === 'sticker' || e.expired)) throw new Error(JSON.stringify(unseen));
+  if (!unseen.some((e) => e.kind === 'story_done' && e.expired)) throw new Error('nouveauté non marquée disparue');
+  if ((await events('e2', false, 'story_done')).length !== 0) throw new Error('une histoire disparue ne doit plus être listée');
+  if ((await prog('e4')).stickers.join() !== 'explosion') throw new Error('tampon perdu');
+});
+await check('rattrapage: les histoires publiées avant le déploiement sont créditées une fois, sans nouveauté d’histoire', async () => {
+  const gB = await mkGame(41);
+  const rB = await room(gB);
+  const b1 = await plant(gB, rB, 'b1', 1, null);
+  const b2 = await plant(gB, rB, 'b2', 2, b1);
+  const b3 = await plant(gB, rB, 'b3', 3, b2);
+  const bEnd = await plant(gB, rB, 'b4', 4, b3);
+  await db.query('select backfill_story_credits()');
+  const second = (await db.query('select backfill_story_credits() n')).rows[0].n;
+  const [{ n: credits }] = (await db.query('select count(*)::int n from story_credits where end_id=$1', [bEnd])).rows;
+  if (credits !== 5 || second !== 0) throw new Error(`${credits} crédits, relance: ${second}`);
+  if ((await prog('b1')).completed !== 1 || (await prog('b1')).inspired !== 1) throw new Error('b1');
+  const ev = await events('b2');
+  if (ev.some((e) => e.kind === 'story_done') || kinds(ev) !== 'sticker:explosion') throw new Error(kinds(ev));
+  if (kinds(await events('b1')) !== 'sticker:explosion,sticker:mustache') throw new Error(kinds(await events('b1')));
+});
+
 console.log(results.join('\n'));

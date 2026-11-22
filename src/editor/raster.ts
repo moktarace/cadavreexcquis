@@ -246,12 +246,12 @@ export function clearMask(pixels: Uint8Array, mask: Uint8Array): void {
   for (let i = 0; i < PIXELS; i++) if (mask[i]) pixels[i] = 0;
 }
 
-/** Les pixels transparents de la sélection laissent intact ce qui est dessous. */
-export function pasteContent(pixels: Uint8Array, c: Content, dx: number, dy: number): void {
+/** Les pixels transparents de la sélection laissent intact ce qui est dessous; le blanc d'un tampon, lui, peint. */
+export function pasteContent(pixels: Uint8Array, c: Content, dx: number, dy: number, whiteOpaque = false): void {
   for (let y = 0; y < c.h; y++) {
     for (let x = 0; x < c.w; x++) {
       const v = c.pixels[y * c.w + x];
-      if (!c.mask[y * c.w + x] || v === 0) continue;
+      if (!c.mask[y * c.w + x] || (v === 0 && !whiteOpaque)) continue;
       const tx = c.x + dx + x;
       const ty = c.y + dy + y;
       if (tx >= 0 && ty >= 0 && tx < WIDTH && ty < HEIGHT) pixels[ty * WIDTH + tx] = v;

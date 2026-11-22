@@ -14,8 +14,9 @@ import {
 } from './raster';
 import { HEIGHT, PIXELS, WIDTH } from './palette';
 import { newProject, type Project } from './project';
+import { REWARD_CONFIG, TRANSPARENT, parseArt, scaleSprite, stickerById, type Sprite } from '../domain/stickers';
 
-export type Tool = 'pen' | 'eraser' | 'fill' | 'rect' | 'lasso' | 'move' | 'hand';
+export type Tool = 'pen' | 'eraser' | 'fill' | 'rect' | 'lasso' | 'move' | 'hand' | 'stamp';
 
 /** Le tiroir d'outils se referme au premier trait; avec les outils de sélection, ses actions restent à portée. */
 export const closesDrawerOnDraw = (tool: Tool) => tool === 'pen' || tool === 'eraser';
@@ -32,6 +33,8 @@ interface Floating {
   dy: number;
   /** Projet avant la levée: restauré par « annuler », empilé dans l'historique à la validation. */
   base: Project;
+  /** Tampon en cours de placement (aperçu mobile, fusionné à la validation). */
+  stamp?: { id: string; scale: number; sprite: Sprite };
 }
 
 const HISTORY_LIMIT = 100;
@@ -50,6 +53,10 @@ export class EditorSession {
   clipboard: Content | null = null;
   floating: Floating | null = null;
   version = 0;
+  /** Nombre de tampons posés au plus sur une case (réglage, jamais une contrainte de dessin). */
+  maxStamps: number = REWARD_CONFIG.maxStampsPerCase;
+  /** Dernière taille choisie: le tampon suivant démarre avec elle. */
+  stampScale: number = REWARD_CONFIG.defaultStampScale;
 
   private history: Project[] = [];
   private future: Project[] = [];
@@ -87,7 +94,7 @@ export class EditorSession {
   private buildFloatView(): Project {
     const f = this.floating!;
     const pixels = this.project.pixels.slice();
-    pasteContent(pixels, f.content, f.dx, f.dy);
+    pasteContent(pixels, f.content, f.dx, f.dy, !!f.stamp);
     return { pixels };
   }
 
@@ -117,6 +124,7 @@ export class EditorSession {
   }
 
   private commit(next: Project) {
+    if (next.stamps === undefined) next = { ...next, stamps: this.project.stamps };
     this.history.push(this.project);
     if (this.history.length > HISTORY_LIMIT) this.history.shift();
     this.future = [];
@@ -176,6 +184,9 @@ export class EditorSession {
         break;
       case 'move':
         this.beginMove(p);
+        break;
+      case 'stamp':
+        this.stampDown(p);
         break;
       case 'hand':
         break;
@@ -269,7 +280,7 @@ export class EditorSession {
     const pixels = this.project.pixels.slice();
     clearMask(pixels, mask);
     const base = this.project;
-    this.project = { pixels };
+    this.project = { pixels, stamps: base.stamps };
     this.floating = { content, dx: 0, dy: 0, base };
     this.floatView = null;
     return true;
@@ -326,14 +337,14 @@ export class EditorSession {
     const f = this.floating;
     if (!f) return;
     const pixels = this.project.pixels.slice();
-    pasteContent(pixels, f.content, f.dx, f.dy);
-    const placed = this.outline()!;
+    pasteContent(pixels, f.content, f.dx, f.dy, !!f.stamp);
+    const placed = f.stamp ? null : this.outline()!;
     this.floating = null;
     this.dragging = null;
     this.history.push(f.base);
     if (this.history.length > HISTORY_LIMIT) this.history.shift();
     this.future = [];
-    this.project = { pixels };
+    this.project = { pixels, stamps: (f.base.stamps ?? 0) + (f.stamp ? 1 : 0) };
     this.selection = placed;
     this.afterProjectChange();
   }
@@ -392,6 +403,65 @@ export class EditorSession {
     this.notify();
   }
 
+  // ───────────── Tampons ─────────────
+
+  /** Tampons déjà posés sur le dessin actuel (annuler en libère un). */
+  get stampsPlaced() {
+    return (this.floating?.base ?? this.project).stamps ?? 0;
+  }
+
+  get canStamp() {
+    return this.stampsPlaced < this.maxStamps;
+  }
+
+  /** Soulève un tampon au centre de la toile: il reste mobile jusqu'à « OK » ou « Annuler ». */
+  beginStamp(id: string, scale: number = this.stampScale): boolean {
+    const def = stickerById(id);
+    if (!def) return false;
+    this.commitFloating();
+    if (!this.canStamp) return false;
+    const sprite = cropSprite(parseArt(def.art));
+    this.floating = { content: stampContent(sprite, scale, WIDTH / 2, HEIGHT / 2), dx: 0, dy: 0, base: this.project, stamp: { id, scale, sprite } };
+    this.dragging = null;
+    this.floatView = null;
+    this.selection = null;
+    this.tool = 'stamp';
+    this.notify();
+    return true;
+  }
+
+  /** Change la taille (multiples entiers, sans flou) en gardant le centre du tampon. */
+  setStampScale(scale: number) {
+    const f = this.floating;
+    if (!f?.stamp || !REWARD_CONFIG.stampScales.includes(scale)) return;
+    const cx = f.content.x + f.dx + f.content.w / 2;
+    const cy = f.content.y + f.dy + f.content.h / 2;
+    this.stampScale = scale;
+    f.stamp = { ...f.stamp, scale };
+    f.content = stampContent(f.stamp.sprite, scale, Math.min(WIDTH, Math.max(0, cx)), Math.min(HEIGHT, Math.max(0, cy)));
+    f.dx = 0;
+    f.dy = 0;
+    this.floatView = null;
+    this.notify();
+  }
+
+  /** Posé dans le tampon: on le tire; posé à côté: il saute sous le stylet ou le curseur, puis suit. */
+  private stampDown(p: Point) {
+    const f = this.floating;
+    if (!f?.stamp) return;
+    const left = f.content.x + f.dx;
+    const top = f.content.y + f.dy;
+    const slack = 12;
+    const inside = p.x >= left - slack && p.x <= left + f.content.w + slack && p.y >= top - slack && p.y <= top + f.content.h + slack;
+    if (!inside) {
+      f.dx = Math.round(p.x - f.content.w / 2) - f.content.x;
+      f.dy = Math.round(p.y - f.content.h / 2) - f.content.y;
+      this.floatView = null;
+    }
+    this.dragging = { start: p, startDx: f.dx, startDy: f.dy };
+    this.notify();
+  }
+
   // ───────────── Réglages d'outils ─────────────
 
   setTool(tool: Tool) {
@@ -412,4 +482,34 @@ export class EditorSession {
     this.dragging = null;
     this.commitFloating();
   }
+}
+
+/** Recadre un tampon sur ses pixels opaques: les marges transparentes ne comptent pas dans son emprise. */
+function cropSprite(s: Sprite): Sprite {
+  let x0 = s.w, y0 = s.h, x1 = -1, y1 = -1;
+  for (let y = 0; y < s.h; y++) {
+    for (let x = 0; x < s.w; x++) {
+      if (s.pixels[y * s.w + x] === TRANSPARENT) continue;
+      x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+    }
+  }
+  if (x1 < 0) return s;
+  const w = x1 - x0 + 1;
+  const h = y1 - y0 + 1;
+  const pixels = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) pixels[y * w + x] = s.pixels[(y0 + y) * s.w + x0 + x];
+  return { w, h, pixels };
+}
+
+/** Contenu flottant d'un tampon agrandi, centré en (cx, cy). */
+function stampContent(sprite: Sprite, scale: number, cx: number, cy: number): Content {
+  const big = scaleSprite(sprite, scale);
+  const pixels = new Uint8Array(big.w * big.h);
+  const mask = new Uint8Array(big.w * big.h);
+  for (let i = 0; i < pixels.length; i++) {
+    if (big.pixels[i] === TRANSPARENT) continue;
+    pixels[i] = big.pixels[i];
+    mask[i] = 1;
+  }
+  return { w: big.w, h: big.h, x: Math.round(cx - big.w / 2), y: Math.round(cy - big.h / 2), pixels, mask };
 }

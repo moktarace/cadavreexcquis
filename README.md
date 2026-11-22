@@ -44,13 +44,14 @@ Trois migrations dans [supabase/migrations](supabase/migrations) :
 6. `0006_discovery.sql` : `archive_weeks()` et `archive_highlights()` (lecture des archives sans limite arbitraire, jamais la partie courante ni une partie privée), ordre total de `contribution_subtree`.
 7. `0007_progress.sql` : `contribution_progress()`, ce que les autres ont fait de tes dessins (suites, histoire terminée), pour « Mes dessins ».
 8. `0008_replies.sql` : table `reply_reads` (état « lu » par joueur et par réponse, RLS : on ne lit et n'écrit que le sien, jamais de modification) et `unread_replies()`. Les réponses déjà publiées au moment de la migration sont considérées comme connues.
+10. `0010_rewards.sql` : récompenses collectives (voir « Récompenses et tampons ») : `story_credits`, `reward_events`, `sticker_unlocks`, `sticker_rules`, `reward_config`, `credit_story()` branchée sur `publish_contribution`, rattachement des histoires déjà terminées (`backfill_story_credits()`, exécuté par la migration), `my_progress()`, `my_reward_events()`, `mark_reward_events_seen()`, `admin_revoke_story()` et `sync_reward_rules()`.
 
 Mise en place sur un projet Supabase :
 
 1. Authentication > Sign In / Providers : activer **Allow anonymous sign-ins**.
 2. Appliquer les migrations : soit coller les trois fichiers dans l'éditeur SQL du tableau de bord, dans l'ordre; soit ajouter `SUPABASE_DB_URL` dans `.env.local` (Project Settings > Database > Connection string) puis `npm run db:apply`.
 
-`npm run db:check` exécute ces migrations dans PGlite avec des rôles et une RLS simulés (75 vérifications : profil automatique, partie courante, auto-continuation refusée, case 4 finale, projet réutilisé ou d'autrui refusé, insertion directe refusée, projet publié figé, signalements, notifications, archives, pagination déterministe, états de lecture des réponses). Cela ne remplace pas un test sur la vraie base; les accès réellement concurrents et le stockage ne sont pas testés.
+`npm run db:check` exécute ces migrations dans PGlite avec des rôles et une RLS simulés (88 vérifications : profil automatique, partie courante, auto-continuation refusée, case 4 finale, projet réutilisé ou d'autrui refusé, insertion directe refusée, projet publié figé, signalements, notifications, archives, pagination déterministe, états de lecture des réponses). Cela ne remplace pas un test sur la vraie base; les accès réellement concurrents et le stockage ne sont pas testés.
 9. `0009_admin_moderation_expiry.sql` : administrateurs (`admins`, `is_admin()`), fenêtre de vie des thèmes (`starts_at`, `expires_at`, `purged_at`), dessins masqués (`hidden_kind`), signalements (`report_contribution`, blocage des signaleurs), fonctions `admin_*`, nettoyage manuel avec aperçu, file de suppression des fichiers (`storage_deletions`), journal (`purge_log`), purge automatique (`purge_expired_games`, **désarmée par défaut**) et blocage des publications sur un thème expiré (`GAME_EXPIRED`).
 
 
@@ -89,6 +90,7 @@ Bouton « Dessiner ». Une seule image 320×240 (jamais suréchantillonnée, aff
 - **Outils** : stylo (6 tailles, 6 textures, pression), gomme (5 tailles), pot de peinture avec motifs, sélection rectangulaire et libre, déplacement, retournement, rotation, copier/couper/coller/supprimer, annuler/rétablir (100 pas, perdus au rechargement). Aucune sauvegarde ni brouillon : on dessine, on publie ou on abandonne.
 - **Vue** : zoom 1× à 10× (pincement, molette, boutons), déplacement (outil Main, deux doigts, Espace+glisser), rejet de la paume pendant l'usage du stylet.
 - **Publication** : l'aperçu PNG est envoyé dans Supabase Storage (seul fichier conservé). Aucun export de fichier côté éditeur. La planche PNG d'un yonkoma complet se fait depuis la page Histoire.
+- **Tampons** (Outils > Tampons) : six tampons de départ (cœur, larme, étoile, couronne, petit impact, éclair) et huit à débloquer (voir « Récompenses et tampons »). Un tampon se choisit (les verrouillés disent comment l'obtenir), apparaît en aperçu au centre, se déplace au doigt, à la souris ou à l'Apple Pencil (un appui à côté le fait sauter sous le stylet), se redimensionne par multiples entiers (×1 à ×4, sans flou) puis se valide avec OK ou s'abandonne avec Annuler. Il est ensuite fusionné dans l'image comme n'importe quels pixels (palette de six couleurs, aucun calque conservé), compte pour une entrée d'Annuler/Rétablir, et la limite est de trois tampons par case (`maxStampsPerCase`). Le blanc d'un tampon peint, le transparent laisse le dessin intact.
 - **Raccourcis (ordinateur)** : B stylo, E gomme, G pot, M rectangle, L lasso, V déplacer, H main, Ctrl/Cmd+Z/Y, Ctrl/Cmd+C/X/V, Entrée valide, Échap annule, +/-/0 zoom.
 
 **Confort stylet et mobile** : réglage « Stylet seulement » (le doigt déplace la vue), blocage du zoom de page sur Safari iOS, animations d'interface désactivées si le système réduit les animations.
@@ -154,6 +156,34 @@ Réservée aux comptes de la table `admins`. Chaque fonction `admin_*` revérifi
 ### Signalements
 
 Publication immédiate, sans approbation. « Signaler ce dessin » (fiche d'une case et lecture d'une histoire) propose cinq motifs et une précision facultative. Le premier signalement valide masque le dessin au public (« Dessin temporairement masqué ») : l'image n'est plus exposée par la vue, les cases des autres auteurs et la structure sont conservées, la case ne peut plus être continuée directement (`PARENT_HIDDEN`) et rien n'est détruit. Interdit : signaler son propre dessin ou le même dessin deux fois ; limite de 10 signalements par heure et par joueur ; les signalements d'un compte bloqué sont enregistrés sans effet. Un dessin rétabli n'est pas remasqué par d'anciens signalements : trois nouveaux signalements ouverts, postérieurs au rétablissement, sont nécessaires. Limites connues : le bucket `previews` est public, donc un fichier masqué reste lisible par quelqu'un qui connaît déjà son URL jusqu'à sa suppression définitive ; des comptes anonymes en nombre peuvent contourner la limite par joueur (d'où le blocage manuel).
+
+## Récompenses et tampons
+
+Deux plaisirs sont récompensés, sans monnaie, XP, classement ni série quotidienne :
+
+- **Histoires collectives terminées** : quand la case 4 d'un chemin est publiée, chaque auteur distinct du chemin (cases 1 à 4) reçoit +1, une seule fois même s'il a dessiné deux cases. Chaque case 4 est une histoire distincte, donc un embranchement qui aboutit ailleurs compte à part. Une branche inachevée ne rapporte rien.
+- **Histoires inspirées** : l'auteur de la case 1 reçoit +1 pour chaque histoire terminée qui en descend (compteur total par joueur, et par première case via `story_credits.root_id`). Les deux compteurs sont indépendants : l'auteur d'une case 1 profite des deux.
+
+Tout est calculé par le serveur dans la transaction de `publish_contribution` (`credit_story`), idempotent (clé primaire `(case 4, joueur, nature)`), sûr en cas de publications simultanées, et sans effet si le chemin contient une case masquée ou retirée par la modération ; un dessin rétabli ensuite déclenche le crédit. L'administration peut retirer les récompenses d'une histoire abusive (`admin_revoke_story`), qui ne sera plus jamais recréditée ; les tampons déjà débloqués restent acquis. Limite connue : des comptes anonymes en nombre pourraient s'envoyer des histoires, comme pour les signalements ; seul le débit maximal de publication s'applique.
+
+**Les récompenses survivent à l'expiration.** Les tables de récompenses ne référencent pas les contributions (aucune clé étrangère) : après la suppression d'un thème, les compteurs, les tampons et l'historique minimal (identifiants) restent acquis. Seules les nouveautés qui renvoyaient aux dessins supprimés sont marquées « disparues » (déclencheur sur la suppression des contributions) et n'ouvrent plus aucune page ; les notifications push associées sont déjà nettoyées par la purge.
+
+**Tampons.** Six dès le départ ; huit se débloquent automatiquement :
+
+| Histoires terminées | Tampon | Histoires inspirées | Tampon |
+|---|---|---|---|
+| 1 | Explosion | 1 | Moustache |
+| 3 | Effet de vitesse | 3 | Lunettes |
+| 5 | Nuage de fumée | 5 | Chapeau extravagant |
+| 10 | Fantôme | 10 | Masque mystérieux |
+
+Plusieurs seuils atteints d'un coup se présentent dans une seule fenêtre « Nouveau tampon débloqué ! ». Les paliers « Ton dessin a inspiré N histoires différentes ! » sont 3, 5 et 10 pour une même case 1.
+
+**Configuration centralisée** : `src/domain/stickers.ts` (seuils, paliers, limite et tailles de tampon, pixel art 16 × 16 en six couleurs). Le serveur applique ses propres copies (`sticker_rules`, `reward_config`) : après avoir modifié un seuil, lancer `npm run db:stickers` et exécuter dans l'éditeur SQL la commande affichée (`sync_reward_rules`, qui réévalue tous les joueurs et ne retire jamais un tampon acquis). Un test vérifie que la configuration et la migration restent identiques.
+
+**Présentation.** Auteur de la case 4 : l'écran de publication révèle les quatre cases dans l'ordre (la dernière mise en valeur), avec confettis pixel art, « Votre histoire est terminée ! », « Une nouvelle BD à plusieurs est née ! », les auteurs sans doublon, « +1 histoire collective terminée » et « Passer l'animation ». Autres auteurs : « Mes dessins » > « À fêter » regroupe, sans enchaîner d'animations, « Une histoire à laquelle tu as participé est terminée ! » (ouvre `#/finished/<case 4>`), les paliers d'inspiration avec les miniatures des fins qui existent encore, et les tampons débloqués (fenêtre ouverte automatiquement une fois par session, jamais dans l'éditeur). Une pastille s'ajoute à celle des réponses. « Ma collection » (compteurs, tampons verrouillés avec leur condition) et « Mes histoires terminées » restent discrets. Aucune notification push supplémentaire ; pas de son ; `prefers-reduced-motion` supprime confettis et révélations.
+
+**Mise en service** (aucune opération destructive) : appliquer `0010_rewards.sql` (`npm run db:apply`). La migration rattache les histoires déjà terminées sans double comptage (relançable avec `select public.backfill_story_credits();`) et sans nouveauté « histoire terminée » ; les tampons ainsi débloqués sont annoncés dans « Mes dessins ». Aucune tâche planifiée ni fonction Edge nouvelle.
 
 ## Calendrier et tests
 

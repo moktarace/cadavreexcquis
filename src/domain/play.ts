@@ -30,7 +30,7 @@ export function publishedCopy(caseNumber: number): PublishedCopy {
   if (caseNumber >= STORY_LENGTH) {
     return {
       title: 'Votre histoire est terminée !',
-      text: 'Vous avez créé une BD en quatre cases !',
+      text: 'Une nouvelle BD à plusieurs est née !',
       note: 'D’autres joueurs peuvent encore imaginer des suites différentes à partir des cases précédentes.',
     };
   }

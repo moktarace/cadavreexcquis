@@ -1,9 +1,11 @@
 import { cardPath, deckCount } from '../backend/api';
+import { useState } from 'react';
 import { go, hrefOf } from '../app/router';
 import { useGame } from '../app/game';
 import type { Card } from '../domain/cards';
 import { publishedCopy } from '../domain/play';
-import { ToyButton } from '../ui';
+import { Confetti, ToyButton } from '../ui';
+import { PublishedRewards, authorsLine } from './Rewards';
 import { Async, useAsync } from './shared';
 import { ShareButton } from './ShareButton';
 
@@ -19,8 +21,10 @@ export function PublishedView({ cards, othersAvailable }: ViewProps) {
   const mine = cards[cards.length - 1];
   const copy = publishedCopy(mine.caseNumber);
   const complete = mine.caseNumber === 4;
+  const [skipped, setSkipped] = useState(false);
   return (
-    <div className="reveal">
+    <div className={`reveal ${complete ? 'celebration' : ''} ${skipped ? 'is-skipped' : ''}`}>
+      {complete && <Confetti />}
       <h1 className="reveal__title">{copy.title}</h1>
       <p className="reveal__text">{copy.text}</p>
       <div className="reveal__board" role="list" aria-label="L’histoire jusqu’à ta case">
@@ -49,6 +53,13 @@ export function PublishedView({ cards, othersAvailable }: ViewProps) {
           );
         })}
       </div>
+      {complete && (
+        <>
+          <p className="hint">Par {authorsLine(cards)}.</p>
+          {!skipped && <ToyButton variant="ghost" size="s" onClick={() => setSkipped(true)}>Passer l’animation</ToyButton>}
+          <PublishedRewards cards={cards} />
+        </>
+      )}
       <p className="hint reveal__note"><NoteWithLink text={copy.note} /></p>
       <div className="reveal__actions">
         {complete ? (

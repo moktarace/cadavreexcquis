@@ -7,7 +7,7 @@ import { Brief, useBrief } from './Brief';
 import { ContextPanel, PublishSheet } from './PublishSheet';
 import { SettingsPanel } from './Panels';
 import { Stage, type StageHandle } from './Stage';
-import { ColorRow, OptionsRow, SecondaryTools, ToolRow } from './Toolbars';
+import { ColorRow, OptionsRow, SecondaryTools, StampSize, ToolRow } from './Toolbars';
 
 const PREFS_KEY = 'cl.editorPrefs.v1';
 
@@ -112,7 +112,8 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
       <div className="ed-stage" onPointerDownCapture={() => moreOpen && closesDrawerOnDraw(session.tool) && setMoreOpen(false)}>
         <Stage session={session} version={version} handleRef={stage} />
         {session.floating && (
-          <div className="ed-floating" role="group" aria-label="Sélection en cours de déplacement">
+          <div className="ed-floating" role="group" aria-label={session.floating.stamp ? 'Tampon en cours de placement' : 'Sélection en cours de déplacement'}>
+            {session.floating.stamp && <StampSize session={session} />}
             <ToyButton variant="success" size="s" icon="check" onClick={() => session.commitFloating()}>OK</ToyButton>
             <ToyButton variant="soft" size="s" icon="close" onClick={() => session.cancelFloating()}>Annuler</ToyButton>
           </div>
@@ -128,7 +129,7 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
         {moreOpen && (
           <div className="ed-more" id="ed-more">
             <SecondaryTools session={session} />
-            <OptionsRow session={session} />
+            <OptionsRow session={session} onStampPicked={() => setMoreOpen(false)} />
             <SettingsPanel session={session} />
           </div>
         )}

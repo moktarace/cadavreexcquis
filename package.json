@@ -14,7 +14,8 @@
     "db:themes": "vite-node scripts/gen-themes-sql.ts",
     "db:apply": "node scripts/apply-db.mjs",
     "db:check": "node scripts/check-sql.mjs",
-    "push:setup": "node scripts/push-setup.mjs"
+    "push:setup": "node scripts/push-setup.mjs",
+    "db:stickers": "vite-node scripts/stickers-sql.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.119.0",
