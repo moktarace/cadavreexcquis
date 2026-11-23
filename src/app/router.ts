@@ -16,9 +16,7 @@ export type Route =
   | { name: 'draw'; parentId: string | null }
   | { name: 'published'; id: string }
   | { name: 'settings' }
-  | { name: 'admin' }
-  /** Laboratoire (#/lab/telecrayon): hors navigation, accessible par URL directe. */
-  | { name: 'telecrayon' };
+  | { name: 'admin' };
 
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -58,8 +56,6 @@ export function parseHash(hash: string): Route {
       return { name: 'settings' };
     case 'admin':
       return { name: 'admin' };
-    case 'lab':
-      return arg === 'telecrayon' ? { name: 'telecrayon' } : { name: 'home' };
     default:
       return { name: 'home' };
   }
@@ -79,8 +75,6 @@ export function hrefOf(r: Route): string {
       return `#/${r.name}/${r.id}`;
     case 'play':
       return r.startId ? `#/play/${r.startId}` : '#/play';
-    case 'telecrayon':
-      return '#/lab/telecrayon';
     case 'draw':
       return r.parentId ? `#/draw/${r.parentId}` : '#/draw';
     default:

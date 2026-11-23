@@ -166,16 +166,12 @@ Les thèmes ne sont plus générés (plus de combinaison métier + adjectif, per
 
 **Gérer la banque** sans redéploiement : onglet « Banque de thèmes » de `#/admin` (mêmes droits que le reste de l'administration, revérifiés côté serveur) : consulter tous les thèmes avec leur statut (libre, programmé, utilisé), chercher, ajouter, corriger ou retirer un thème inutilisé, voir les prochains cartons et importer une liste (un titre par ligne ou JSON, avec détection des doublons exacts — accents, majuscules, ponctuation et articles ignorés — et des titres trop proches avant confirmation). Pour de vrais cartons de feuilles d'arbitre, choisir la provenance « Feuille de match (arbitre) ». En ligne de commande : ajouter les titres dans `supabase/themes.json` puis `npm run db:themes` et coller le SQL affiché dans l'éditeur SQL (les doublons sont ignorés).
 
-### Laboratoire : Télécrayon (prototype)
-
-Page expérimentale `#/lab/telecrayon` (URL directe, aucun lien dans le jeu, chargée à part) pour tester un dessin à deux pouces sur smartphone : le pouce gauche déplace un curseur sur un pavé relatif (accélération légère, profils Précis et Rapide, réglables dans le panneau de mesures), le pouce droit maintient TRACER (appui bref = un point; glisser vers la zone d'annulation puis relâcher abandonne le trait). Elle réutilise `EditorSession` (mêmes couleurs, même pinceau, annuler/rétablir) mais ne publie rien, n'appelle pas Supabase et ne garde rien. Le mode « Direct » permet de comparer avec le doigt sur la toile. Sur ordinateur : glisser à la souris sur le pavé en maintenant Espace tient lieu de TRACER. Logique et tests : `src/lab/`.
-
 ### Les Mimo (éditeur sur téléphone)
 
 Petits personnages originaux au trait noir (6 styles × 6 émotions × 6 poses) que l'on place en quelques gestes dans une case. Le bouton « + Mimo » n'apparaît que sur un **téléphone tactile** (pointeur imprécis sans survol, écran physique < 600 px: `isPhoneLike`, `src/app/platform.ts`), jamais sur ordinateur ni iPad.
 
 - **Gestes.** Un tap sur le Mimo change sa pose, un glissement le déplace, deux doigts changent sa taille (60 à 220 px). L'émotion et le style se changent dans deux zones dédiées sous la toile (glisser, ou toucher une moitié): déplacer et balayer sur le même objet se confondaient. Tant que le Mimo n'est pas placé, rien ne dessine sur la toile; « Placer » le fusionne, « Annuler » (ou le bouton annuler de l'éditeur) l'abandonne.
-- **Placement.** Une seule entrée d'historique, comme un trait: annuler retire le Mimo et libère la limite d'**un Mimo par case** (compteur `Project.mimos`, comme les tampons; seul le PNG aplati est publié). Il est toujours noir (indice 1 de la palette), fond transparent.
+- **Placement.** Une seule entrée d'historique, comme un trait: annuler retire le Mimo, rétablir le remet. On peut en placer **autant qu'on veut** dans une même case, un à la fois; chacun devient une partie de l'image aplatie (aucun calque, seul le PNG est publié). Il est toujours noir (indice 1 de la palette), fond transparent.
 - **Dessin.** Vectoriel et déterministe (`src/editor/mimo/art.ts`), rasterisé sans lissage par un tracé à distance (`raster.ts`), donc identique à l'aperçu au pixel près. `npm run mimo:sheet -- /tmp/mimo.png --size=150` produit des planches contact pour relire le dessin.
 - **Animations.** Rebond, ondulation et petit saut de moins de 250 ms, désactivés si le système demande moins d'animations.
 

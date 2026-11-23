@@ -117,7 +117,6 @@ describe('placement dans l’éditeur', () => {
     s.cancelMimo();
     expect(s.mimo).toBeNull();
     expect(s.project.pixels).toEqual(before);
-    expect(s.canMimo).toBe(true);
     s.beginMimo();
     s.undo(); // « annuler » abandonne d’abord le Mimo en cours
     expect(s.mimo).toBeNull();
@@ -141,39 +140,121 @@ describe('placement dans l’éditeur', () => {
     expect(s.project.pixels[5 * WIDTH + 150]).toBe(2); // le trait rouge est resté
   });
 
-  it('s’annule et se rétablit comme un trait, et rend la main au dessin libre', () => {
-    const s = new EditorSession();
-    s.beginMimo();
-    s.placeMimo();
-    const done = s.project.pixels.slice();
-    s.undo();
-    expect(placed(s)).toBe(0);
-    expect(s.canMimo).toBe(true);
-    s.redo();
-    expect(s.project.pixels).toEqual(done);
-    expect(s.canMimo).toBe(false);
+  /** Place un Mimo aux réglages donnés. */
+  function addMimo(s: EditorSession, at: { x: number; y: number; size: number; pose: number; emotion: number; design: number }) {
+    expect(s.beginMimo()).toBe(true);
+    s.mimoMoveTo(at.x, at.y);
+    s.mimoResize(at.size);
+    for (const axis of ['pose', 'emotion', 'design'] as const) for (let i = 0; i < at[axis]; i++) s.mimoStep(axis);
+    expect(s.placeMimo()).toBe(true);
+  }
 
-    s.pointerDown(3, 3);
-    s.pointerMove(30, 3);
-    s.pointerUp();
-    expect(s.project.pixels[3 * WIDTH + 15]).toBe(s.color);
-    expect(s.canMimo).toBe(false); // la limite survit aux traits suivants
+  const scene = [
+    { x: 50, y: 150, size: 120, pose: 0, emotion: 0, design: 0 },
+    { x: 140, y: 120, size: 90, pose: 2, emotion: 3, design: 1 },
+    { x: 230, y: 160, size: 150, pose: 5, emotion: 2, design: 4 },
+    { x: 290, y: 90, size: 70, pose: 3, emotion: 5, design: 3 },
+    { x: 100, y: 60, size: 100, pose: 1, emotion: 4, design: 5 },
+  ];
+
+  it('permet de placer autant de Mimo que l’on veut dans une même case', () => {
+    const s = new EditorSession();
+    s.reducedMotion = true;
+    let last = 0;
+    for (const m of scene) {
+      addMimo(s, m);
+      const n = placed(s);
+      expect(n).toBeGreaterThan(last);
+      last = n;
+    }
+    for (let i = 0; i < 10; i++) addMimo(s, { x: 20 + i * 30, y: 120, size: 60, pose: i % 6, emotion: i % 6, design: i % 6 });
+    expect(s.beginMimo()).toBe(true);
+    expect(s.mimo).not.toBeNull();
   });
 
-  it('limite à un seul Mimo par case, libéré par l’annulation du placement', () => {
+  it('chaque Mimo se règle indépendamment avant son placement, sans toucher aux précédents', () => {
     const s = new EditorSession();
-    expect(s.beginMimo()).toBe(true);
-    expect(s.beginMimo()).toBe(false); // déjà en cours
-    s.placeMimo();
-    expect(s.canMimo).toBe(false);
-    expect(s.beginMimo()).toBe(false);
-    s.setTool('eraser');
-    s.pointerDown(0, 0);
+    s.reducedMotion = true;
+    addMimo(s, scene[0]);
+    const first = s.project.pixels.slice();
+    s.beginMimo();
+    expect(s.mimo!.spec).toEqual({ design: 0, emotion: 0, pose: 0 }); // chaque nouveau Mimo repart de zéro
+    s.mimoStep('design', 1);
+    s.mimoStep('emotion', -1);
+    s.mimoMoveTo(250, 100);
+    s.mimoResize(80);
+    expect(s.project.pixels).toEqual(first);
+    s.cancelMimo();
+    expect(s.project.pixels).toEqual(first);
+  });
+
+  it('autorise le dessin libre entre deux placements, et le Mimo suivant se pose par-dessus', () => {
+    const s = new EditorSession();
+    s.reducedMotion = true;
+    s.update({ color: 3 });
+    addMimo(s, scene[0]);
+    s.pointerDown(3, 3);
+    s.pointerMove(300, 3);
     s.pointerUp();
-    expect(s.beginMimo()).toBe(false);
-    while (s.canUndo) s.undo();
-    expect(s.canMimo).toBe(true);
-    expect(s.beginMimo()).toBe(true);
+    expect(s.project.pixels[3 * WIDTH + 150]).toBe(3);
+    addMimo(s, scene[1]);
+    expect(s.project.pixels[3 * WIDTH + 150]).toBe(3);
+    s.pointerDown(3, 230);
+    s.pointerMove(300, 230);
+    s.pointerUp();
+    expect(s.project.pixels[230 * WIDTH + 150]).toBe(3);
+  });
+
+  it('annule et rétablit plusieurs placements successifs, un par un', () => {
+    const s = new EditorSession();
+    s.reducedMotion = true;
+    const states = [s.project.pixels.slice()];
+    for (const m of scene) {
+      addMimo(s, m);
+      states.push(s.project.pixels.slice());
+      s.pointerDown(m.x, 5);
+      s.pointerMove(m.x + 15, 5);
+      s.pointerUp();
+      states.push(s.project.pixels.slice());
+    }
+    for (let i = states.length - 2; i >= 0; i--) {
+      s.undo();
+      expect(s.project.pixels).toEqual(states[i]);
+    }
+    expect(s.canUndo).toBe(false);
+    for (let i = 1; i < states.length; i++) {
+      s.redo();
+      expect(s.project.pixels).toEqual(states[i]);
+    }
+    expect(s.canRedo).toBe(false);
+  });
+
+  it('un nouveau placement efface l’historique à rétablir, comme un trait', () => {
+    const s = new EditorSession();
+    addMimo(s, scene[0]);
+    s.undo();
+    expect(s.canRedo).toBe(true);
+    addMimo(s, scene[1]);
+    expect(s.canRedo).toBe(false);
+  });
+
+  it('reste fluide avec de nombreux personnages', () => {
+    const s = new EditorSession();
+    s.reducedMotion = true;
+    const t0 = performance.now();
+    for (let i = 0; i < 20; i++) {
+      addMimo(s, { x: (i * 37) % 320, y: 80 + ((i * 53) % 120), size: 60 + ((i * 29) % 160), pose: i % 6, emotion: (i * 5) % 6, design: (i * 7) % 6 });
+    }
+    expect(performance.now() - t0).toBeLessThan(2500);
+    // aperçu d'un Mimo de plus au-dessus de la scène: une image
+    s.beginMimo();
+    const t1 = performance.now();
+    for (let i = 0; i < 30; i++) {
+      s.mimoMoveTo(100 + i * 3, 120);
+      s.mimoResize(80 + i * 4);
+      s.current();
+    }
+    expect((performance.now() - t1) / 30).toBeLessThan(16);
   });
 
   it('ne laisse rien dessiner ni changer d’outil pendant le placement', () => {
@@ -191,9 +272,8 @@ describe('placement dans l’éditeur', () => {
     expect(s.project.pixels[20 * WIDTH + 5]).toBe(0);
   });
 
-  it('garde la limite pour un dessin ancien (sans compteur) et après un déplacement de sélection', () => {
+  it('fonctionne aussi sur un dessin ancien et après un déplacement de sélection', () => {
     const s = new EditorSession({ pixels: new Uint8Array(WIDTH * HEIGHT) });
-    expect(s.canMimo).toBe(true);
     s.beginMimo();
     s.placeMimo();
     s.selectAll();
@@ -202,7 +282,7 @@ describe('placement dans l’éditeur', () => {
     s.pointerMove(30, 10);
     s.pointerUp();
     s.commitFloating();
-    expect(s.canMimo).toBe(false);
+    expect(s.beginMimo()).toBe(true);
   });
 
   it('place au rendu final, sans la déformation d’animation', () => {

@@ -1,4 +1,3 @@
-import { Suspense, lazy } from 'react';
 import { GameProvider } from './app/game';
 import { hrefOf, useRoute, type Route } from './app/router';
 import { useOnline } from './app/hooks';
@@ -17,9 +16,6 @@ import { ArchivesPage, MinePage, WeekPage } from './pages/Library';
 import { AdminPage } from './pages/Admin';
 import { SettingsPage } from './pages/Settings';
 import { Dock, type DockItem } from './ui';
-
-// Chargé à part: le laboratoire n'alourdit pas le jeu et n'a aucun lien dans la navigation.
-const TelecrayonLab = lazy(() => import('./lab/TelecrayonLab'));
 
 interface NavEntry {
   id: string;
@@ -70,7 +66,6 @@ function Page({ route }: { route: Route }) {
     case 'admin':
       return <AdminPage />;
     case 'draw':
-    case 'telecrayon':
       return null;
   }
 }
@@ -80,14 +75,6 @@ function Screens() {
   const online = useOnline();
   const { hasUnread } = useReplies();
   const rewards = useRewards();
-
-  if (route.name === 'telecrayon') {
-    return (
-      <Suspense fallback={null}>
-        <TelecrayonLab />
-      </Suspense>
-    );
-  }
 
   return route.name === 'draw' ? (
     <EditorScreen key={route.parentId ?? 'root'} parentId={route.parentId} />

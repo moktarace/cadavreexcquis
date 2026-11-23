@@ -4,8 +4,6 @@ import { rasterMimo } from './raster';
 
 export type MimoAxis = 'pose' | 'emotion' | 'design';
 
-/** Un seul Mimo par case dans cette première version. */
-export const MIMO_LIMIT = 1;
 export const MIMO_MIN = 60;
 export const MIMO_MAX = 220;
 export const MIMO_DEFAULT = 120;

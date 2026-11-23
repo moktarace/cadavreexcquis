@@ -49,10 +49,9 @@ export function ToolRow({ session, moreOpen, onMore, onMimo }: { session: Editor
           className="tool-btn tool-btn--more tool-btn--mimo"
           variant="soft"
           size="s"
-          icon={session.canMimo ? 'plus' : 'check'}
-          disabled={!session.canMimo}
-          aria-label={session.canMimo ? 'Ajouter un Mimo' : 'Un Mimo est déjà placé : annule-le pour en changer'}
-          title={session.canMimo ? 'Ajouter un Mimo' : 'Un seul Mimo par case'}
+          icon="plus"
+          aria-label="Ajouter un Mimo"
+          title="Ajouter un Mimo"
           onClick={onMimo}
         >
           Mimo

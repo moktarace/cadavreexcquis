@@ -14,7 +14,7 @@ import {
 } from './raster';
 import { HEIGHT, PIXELS, WIDTH } from './palette';
 import { newProject, type Project } from './project';
-import { MIMO_DEFAULT, MIMO_LIMIT, FX_DURATION, clampCenter, clampSize, drawMimo, type MimoAxis, type MimoState } from './mimo/mimo';
+import { MIMO_DEFAULT, FX_DURATION, clampCenter, clampSize, drawMimo, type MimoAxis, type MimoState } from './mimo/mimo';
 import { MIMO_DESIGNS, MIMO_EMOTIONS, MIMO_POSES } from './mimo/art';
 import { REWARD_CONFIG, TRANSPARENT, parseArt, scaleSprite, stickerById, type Sprite } from '../domain/stickers';
 
@@ -141,7 +141,6 @@ export class EditorSession {
 
   private commit(next: Project) {
     if (next.stamps === undefined) next = { ...next, stamps: this.project.stamps };
-    if (next.mimos === undefined) next = { ...next, mimos: this.project.mimos };
     this.history.push(this.project);
     if (this.history.length > HISTORY_LIMIT) this.history.shift();
     this.future = [];
@@ -303,7 +302,7 @@ export class EditorSession {
     const pixels = this.project.pixels.slice();
     clearMask(pixels, mask);
     const base = this.project;
-    this.project = { pixels, stamps: base.stamps, mimos: base.mimos };
+    this.project = { pixels, stamps: base.stamps };
     this.floating = { content, dx: 0, dy: 0, base };
     this.floatView = null;
     return true;
@@ -367,7 +366,7 @@ export class EditorSession {
     this.history.push(f.base);
     if (this.history.length > HISTORY_LIMIT) this.history.shift();
     this.future = [];
-    this.project = { pixels, stamps: (f.base.stamps ?? 0) + (f.stamp ? 1 : 0), mimos: f.base.mimos };
+    this.project = { pixels, stamps: (f.base.stamps ?? 0) + (f.stamp ? 1 : 0) };
     this.selection = placed;
     this.afterProjectChange();
   }
@@ -488,20 +487,10 @@ export class EditorSession {
 
   // ───────────── Mimo ─────────────
 
-  /** Mimo déjà placés sur le dessin actuel (annuler le placement en libère un). */
-  get mimosPlaced() {
-    return (this.floating?.base ?? this.project).mimos ?? 0;
-  }
-
-  get canMimo() {
-    return this.mimosPlaced < MIMO_LIMIT;
-  }
-
   /** Pose un Mimo au centre de la toile: il reste modifiable jusqu'à « Placer » ou « Annuler ». */
   beginMimo(): boolean {
     if (this.mimo) return false;
     this.commitFloating();
-    if (!this.canMimo) return false;
     this.selection = null;
     this.mimo = { spec: { design: 0, emotion: 0, pose: 0 }, cx: WIDTH / 2, cy: HEIGHT / 2, size: MIMO_DEFAULT, fx: null };
     this.mimoView = null;
@@ -554,7 +543,7 @@ export class EditorSession {
     const pixels = this.project.pixels.slice();
     drawMimo(pixels, m, false);
     this.mimo = null;
-    this.commit({ pixels, mimos: (this.project.mimos ?? 0) + 1 });
+    this.commit({ pixels });
     return true;
   }
 

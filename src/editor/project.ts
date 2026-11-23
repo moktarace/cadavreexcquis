@@ -9,8 +9,6 @@ export interface Project {
   pixels: Uint8Array;
   /** Tampons déjà posés sur cette version du dessin (suit annuler/rétablir). */
   stamps?: number;
-  /** Mimo déjà placés sur cette version du dessin (suit annuler/rétablir; absent = 0, anciens dessins compris). */
-  mimos?: number;
 }
 
 export function newProject(): Project {
