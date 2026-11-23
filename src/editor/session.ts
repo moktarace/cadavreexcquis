@@ -14,6 +14,8 @@ import {
 } from './raster';
 import { HEIGHT, PIXELS, WIDTH } from './palette';
 import { newProject, type Project } from './project';
+import { MIMO_DEFAULT, MIMO_LIMIT, FX_DURATION, clampCenter, clampSize, drawMimo, type MimoAxis, type MimoState } from './mimo/mimo';
+import { MIMO_DESIGNS, MIMO_EMOTIONS, MIMO_POSES } from './mimo/art';
 import { REWARD_CONFIG, TRANSPARENT, parseArt, scaleSprite, stickerById, type Sprite } from '../domain/stickers';
 
 export type Tool = 'pen' | 'eraser' | 'fill' | 'rect' | 'lasso' | 'move' | 'hand' | 'stamp';
@@ -39,6 +41,8 @@ interface Floating {
 
 const HISTORY_LIMIT = 100;
 
+const clock = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
 export class EditorSession {
   project: Project;
   /** Indice de palette du stylo et du pot de peinture. */
@@ -53,6 +57,10 @@ export class EditorSession {
   clipboard: Content | null = null;
   floating: Floating | null = null;
   version = 0;
+  /** Mimo en cours de placement (modifiable jusqu'à « Placer » ou « Annuler »). */
+  mimo: MimoState | null = null;
+  /** Préférence système: pas d'animation des Mimo. */
+  reducedMotion = false;
   /** Nombre de tampons posés au plus sur une case (réglage, jamais une contrainte de dessin). */
   maxStamps: number = REWARD_CONFIG.maxStampsPerCase;
   /** Dernière taille choisie: le tampon suivant démarre avec elle. */
@@ -65,6 +73,7 @@ export class EditorSession {
   private selecting: { kind: 'rect' | 'lasso'; start: Point; points: Point[] } | null = null;
   private dragging: { start: Point; startDx: number; startDy: number } | null = null;
   private floatView: Project | null = null;
+  private mimoView: Project | null = null;
 
   constructor(project: Project = newProject()) {
     this.project = project;
@@ -87,8 +96,15 @@ export class EditorSession {
   /** Projet à afficher: trait en cours et sélection flottante inclus. */
   current(): Project {
     if (this.stroke) return this.stroke.live;
+    if (this.mimo) return (this.mimoView ??= this.buildMimoView());
     if (this.floating) return (this.floatView ??= this.buildFloatView());
     return this.project;
+  }
+
+  private buildMimoView(): Project {
+    const pixels = this.project.pixels.slice();
+    drawMimo(pixels, this.mimo!, true);
+    return { pixels };
   }
 
   private buildFloatView(): Project {
@@ -117,7 +133,7 @@ export class EditorSession {
   // ───────────── Historique ─────────────
 
   get canUndo() {
-    return this.floating !== null || this.history.length > 0;
+    return this.mimo !== null || this.floating !== null || this.history.length > 0;
   }
   get canRedo() {
     return this.future.length > 0;
@@ -125,6 +141,7 @@ export class EditorSession {
 
   private commit(next: Project) {
     if (next.stamps === undefined) next = { ...next, stamps: this.project.stamps };
+    if (next.mimos === undefined) next = { ...next, mimos: this.project.mimos };
     this.history.push(this.project);
     if (this.history.length > HISTORY_LIMIT) this.history.shift();
     this.future = [];
@@ -134,10 +151,15 @@ export class EditorSession {
 
   private afterProjectChange() {
     this.floatView = null;
+    this.mimoView = null;
     this.notify();
   }
 
   undo() {
+    if (this.mimo) {
+      this.cancelMimo();
+      return;
+    }
     if (this.stroke) return;
     if (this.floating) {
       this.cancelFloating();
@@ -152,7 +174,7 @@ export class EditorSession {
   }
 
   redo() {
-    if (this.stroke || this.floating) return;
+    if (this.stroke || this.floating || this.mimo) return;
     const next = this.future.pop();
     if (!next) return;
     this.history.push(this.project);
@@ -164,6 +186,7 @@ export class EditorSession {
   // ───────────── Entrées pointeur (coordonnées logiques 320×240, flottantes) ─────────────
 
   pointerDown(x: number, y: number, pressure = 1) {
+    if (this.mimo) return; // un Mimo en cours de placement ne laisse rien dessiner
     const p = { x, y, pressure };
     switch (this.tool) {
       case 'pen':
@@ -280,7 +303,7 @@ export class EditorSession {
     const pixels = this.project.pixels.slice();
     clearMask(pixels, mask);
     const base = this.project;
-    this.project = { pixels, stamps: base.stamps };
+    this.project = { pixels, stamps: base.stamps, mimos: base.mimos };
     this.floating = { content, dx: 0, dy: 0, base };
     this.floatView = null;
     return true;
@@ -344,7 +367,7 @@ export class EditorSession {
     this.history.push(f.base);
     if (this.history.length > HISTORY_LIMIT) this.history.shift();
     this.future = [];
-    this.project = { pixels, stamps: (f.base.stamps ?? 0) + (f.stamp ? 1 : 0) };
+    this.project = { pixels, stamps: (f.base.stamps ?? 0) + (f.stamp ? 1 : 0), mimos: f.base.mimos };
     this.selection = placed;
     this.afterProjectChange();
   }
@@ -417,7 +440,7 @@ export class EditorSession {
   /** Soulève un tampon au centre de la toile: il reste mobile jusqu'à « OK » ou « Annuler ». */
   beginStamp(id: string, scale: number = this.stampScale): boolean {
     const def = stickerById(id);
-    if (!def) return false;
+    if (!def || this.mimo) return false;
     this.commitFloating();
     if (!this.canStamp) return false;
     const sprite = cropSprite(parseArt(def.art));
@@ -462,9 +485,90 @@ export class EditorSession {
     this.notify();
   }
 
+
+  // ───────────── Mimo ─────────────
+
+  /** Mimo déjà placés sur le dessin actuel (annuler le placement en libère un). */
+  get mimosPlaced() {
+    return (this.floating?.base ?? this.project).mimos ?? 0;
+  }
+
+  get canMimo() {
+    return this.mimosPlaced < MIMO_LIMIT;
+  }
+
+  /** Pose un Mimo au centre de la toile: il reste modifiable jusqu'à « Placer » ou « Annuler ». */
+  beginMimo(): boolean {
+    if (this.mimo) return false;
+    this.commitFloating();
+    if (!this.canMimo) return false;
+    this.selection = null;
+    this.mimo = { spec: { design: 0, emotion: 0, pose: 0 }, cx: WIDTH / 2, cy: HEIGHT / 2, size: MIMO_DEFAULT, fx: null };
+    this.mimoView = null;
+    this.notify();
+    return true;
+  }
+
+  /** Passe à la pose, l'émotion ou le style suivant (ou précédent), en boucle. */
+  mimoStep(axis: MimoAxis, dir: 1 | -1 = 1, now: number = clock()) {
+    const m = this.mimo;
+    if (!m) return;
+    const count = { pose: MIMO_POSES, emotion: MIMO_EMOTIONS, design: MIMO_DESIGNS }[axis];
+    m.spec = { ...m.spec, [axis]: (m.spec[axis] + dir + count) % count };
+    m.fx = this.reducedMotion ? null : { kind: axis, t0: now, t: 0 };
+    this.mimoView = null;
+    this.notify();
+  }
+
+  mimoMoveTo(x: number, y: number) {
+    const m = this.mimo;
+    if (!m) return;
+    Object.assign(m, clampCenter(x, y));
+    this.mimoView = null;
+    this.notify();
+  }
+
+  mimoResize(size: number) {
+    const m = this.mimo;
+    if (!m) return;
+    m.size = clampSize(size);
+    this.mimoView = null;
+    this.notify();
+  }
+
+  /** Avance l'animation en cours; faux quand elle est terminée. */
+  mimoFrame(now: number = clock()): boolean {
+    const fx = this.mimo?.fx;
+    if (!fx) return false;
+    fx.t = Math.min(1, (now - fx.t0) / FX_DURATION[fx.kind]);
+    if (fx.t >= 1) this.mimo!.fx = null;
+    this.mimoView = null;
+    this.notify();
+    return this.mimo!.fx !== null;
+  }
+
+  /** Dessine le Mimo sur la toile (une entrée d'historique, comme un trait) et rend la main au crayon. */
+  placeMimo(): boolean {
+    const m = this.mimo;
+    if (!m) return false;
+    const pixels = this.project.pixels.slice();
+    drawMimo(pixels, m, false);
+    this.mimo = null;
+    this.commit({ pixels, mimos: (this.project.mimos ?? 0) + 1 });
+    return true;
+  }
+
+  cancelMimo() {
+    if (!this.mimo) return;
+    this.mimo = null;
+    this.mimoView = null;
+    this.notify();
+  }
+
   // ───────────── Réglages d'outils ─────────────
 
   setTool(tool: Tool) {
+    if (this.mimo) return;
     if (tool !== 'move') this.commitFloating();
     this.tool = tool;
     this.notify();

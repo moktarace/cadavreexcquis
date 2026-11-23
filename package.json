@@ -15,7 +15,8 @@
     "db:apply": "node scripts/apply-db.mjs",
     "db:check": "node scripts/check-sql.mjs",
     "push:setup": "node scripts/push-setup.mjs",
-    "db:stickers": "vite-node scripts/stickers-sql.ts"
+    "db:stickers": "vite-node scripts/stickers-sql.ts",
+    "mimo:sheet": "vite-node scripts/mimo-sheet.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.119.0",

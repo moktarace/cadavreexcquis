@@ -38,12 +38,26 @@ function toolButton(session: EditorSession, t: (typeof TOOLS)[number], className
 }
 
 /** Commandes essentielles: stylo, gomme, et l'accès à la palette d'outils secondaire. */
-export function ToolRow({ session, moreOpen, onMore }: { session: EditorSession; moreOpen: boolean; onMore: () => void }) {
+export function ToolRow({ session, moreOpen, onMore, onMimo }: { session: EditorSession; moreOpen: boolean; onMore: () => void; onMimo?: () => void }) {
   const other = TOOLS.find((t) => t.id === session.tool && !ESSENTIAL.includes(t.id));
   return (
     <div className="ed-tools" role="toolbar" aria-label="Outils">
       {TOOLS.filter((t) => ESSENTIAL.includes(t.id)).map((t) => toolButton(session, t, 'tool-btn tool-btn--main'))}
       <span className="ed-tools__gap" />
+      {onMimo && (
+        <ToyButton
+          className="tool-btn tool-btn--more tool-btn--mimo"
+          variant="soft"
+          size="s"
+          icon={session.canMimo ? 'plus' : 'check'}
+          disabled={!session.canMimo}
+          aria-label={session.canMimo ? 'Ajouter un Mimo' : 'Un Mimo est déjà placé : annule-le pour en changer'}
+          title={session.canMimo ? 'Ajouter un Mimo' : 'Un seul Mimo par case'}
+          onClick={onMimo}
+        >
+          Mimo
+        </ToyButton>
+      )}
       <ToyButton
         className="tool-btn tool-btn--more"
         variant="soft"

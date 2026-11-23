@@ -2,6 +2,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { HEIGHT, WIDTH } from '../palette';
 import { indexedToRgba } from '../render';
 import type { EditorSession } from '../session';
+import { MimoGesture } from '../mimo/gesture';
+import { mimoRect } from '../mimo/mimo';
 
 interface View {
   zoom: number;
@@ -41,6 +43,7 @@ export function Stage({ session, version, handleRef }: Props) {
   const lastPan = useRef({ x: 0, y: 0 });
   const gesture = useRef({ dist: 1, cx: 0, cy: 0 });
   const spaceHeld = useRef(false);
+  const gestureOf = useRef<MimoGesture | null>(null);
 
   // Taille du plateau: le plus grand agrandissement qui tient dans la zone, marge comprise.
   const fit = Math.max(0.5, Math.min((size.w - 8) / WIDTH, (size.h - 8) / HEIGHT));
@@ -96,6 +99,7 @@ export function Stage({ session, version, handleRef }: Props) {
 
     const o = overlay.current!.getContext('2d')!;
     o.clearRect(0, 0, WIDTH, HEIGHT);
+    if (session.mimo) drawMimoFrame(o, mimoRect({ ...session.mimo, fx: null }));
     const mask = session.outline();
     if (mask) {
       o.fillStyle = '#000';
@@ -133,7 +137,43 @@ export function Stage({ session, version, handleRef }: Props) {
     };
   };
 
+  const mimoGesture = (): MimoGesture =>
+    (gestureOf.current ??= new MimoGesture(session, (x, y) => toLogical(x, y)));
+
+  // Animation très courte d'un changement de pose, d'émotion ou de style.
+  const fxStart = session.mimo?.fx?.t0;
+  useEffect(() => {
+    if (fxStart === undefined) return;
+    let raf = 0;
+    const step = () => {
+      if (session.mimoFrame()) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [session, fxStart]);
+
+  // Rotation ou perte de focus: le geste en cours est abandonné, rien n'est validé.
+  useEffect(() => {
+    const reset = () => gestureOf.current?.reset();
+    window.addEventListener('blur', reset);
+    window.addEventListener('orientationchange', reset);
+    return () => {
+      window.removeEventListener('blur', reset);
+      window.removeEventListener('orientationchange', reset);
+    };
+  }, []);
+
   const onDown = (e: React.PointerEvent) => {
+    if (session.mimo || gestureOf.current?.active) {
+      // Un Mimo en cours de placement: ces gestes ne dessinent jamais.
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        // pointeur déjà terminé
+      }
+      if (session.mimo) mimoGesture().down(e.pointerId, e.clientX, e.clientY, e.timeStamp);
+      return;
+    }
     if (e.pointerType === 'touch' && penDown.current) return; // rejet de la paume
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -165,6 +205,10 @@ export function Stage({ session, version, handleRef }: Props) {
   };
 
   const onMove = (e: React.PointerEvent) => {
+    if (gestureOf.current?.active) {
+      gestureOf.current.move(e.pointerId, e.clientX, e.clientY);
+      return;
+    }
     const known = pointers.current.get(e.pointerId);
     if (!known) return;
     known.x = e.clientX;
@@ -196,6 +240,10 @@ export function Stage({ session, version, handleRef }: Props) {
   };
 
   const onUp = (e: React.PointerEvent) => {
+    if (gestureOf.current?.active) {
+      gestureOf.current.up(e.pointerId, e.timeStamp, e.type === 'pointercancel');
+      return;
+    }
     if (!pointers.current.has(e.pointerId)) return;
     pointers.current.delete(e.pointerId);
     if (e.pointerType === 'pen') penDown.current = false;
@@ -266,4 +314,25 @@ export function Stage({ session, version, handleRef }: Props) {
       </div>
     </div>
   );
+}
+
+/** Cadre du Mimo en cours de placement: coins noirs cerclés de blanc, visibles sur tout fond (jamais dans le dessin). */
+function drawMimoFrame(o: CanvasRenderingContext2D, r: { left: number; top: number; w: number; h: number }) {
+  const len = Math.max(6, Math.min(14, Math.round(r.w / 5)));
+  const right = r.left + r.w;
+  const bottom = r.top + r.h;
+  const corners: [number, number, number, number][] = [
+    [r.left, r.top, 1, 1],
+    [right, r.top, -1, 1],
+    [r.left, bottom, 1, -1],
+    [right, bottom, -1, -1],
+  ];
+  for (const [color, grow] of [['#fff', 2], ['#141414', 0]] as const) {
+    o.fillStyle = color;
+    for (const [x, y, dx, dy] of corners) {
+      const t = 2 + grow * 2;
+      o.fillRect(dx > 0 ? x - grow : x - len - grow, dy > 0 ? y - grow : y - t + grow, len + grow * 2, t);
+      o.fillRect(dx > 0 ? x - grow : x - t + grow, dy > 0 ? y - grow : y - len - grow, t, len + grow * 2);
+    }
+  }
 }

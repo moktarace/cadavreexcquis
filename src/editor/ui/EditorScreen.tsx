@@ -1,15 +1,18 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Target } from '../../backend/api';
+import { isPhoneTouch } from '../../app/platform';
 import { go } from '../../app/router';
 import { ToyButton, ToyDialog } from '../../ui';
 import { EditorSession, closesDrawerOnDraw } from '../session';
 import { Brief, useBrief } from './Brief';
+import { MimoConsole, MimoHint } from './MimoConsole';
 import { ContextPanel, PublishSheet } from './PublishSheet';
 import { SettingsPanel } from './Panels';
 import { Stage, type StageHandle } from './Stage';
 import { ColorRow, OptionsRow, SecondaryTools, StampSize, ToolRow } from './Toolbars';
 
 const PREFS_KEY = 'cl.editorPrefs.v1';
+const MIMO_HINT_KEY = 'cl.mimoHint.v1';
 
 /** Le dessin n'existe qu'ici: on le publie, ou on le perd en quittant. */
 export function EditorScreen({ parentId }: { parentId: string | null }) {
@@ -25,6 +28,40 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
   const [contextOpen, setContextOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
   const stage = useRef<StageHandle | null>(null);
+  // Les Mimo sont réservés aux téléphones tactiles (ni ordinateur, ni iPad avec stylet).
+  const phone = useMemo(() => isPhoneTouch(), []);
+  const [mimoHint, setMimoHint] = useState(false);
+  const [popped, setPopped] = useState(false);
+
+  useEffect(() => {
+    session.reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+  }, [session]);
+
+  useEffect(() => {
+    if (!mimoHint) return;
+    const id = window.setTimeout(() => setMimoHint(false), 7000);
+    return () => window.clearTimeout(id);
+  }, [mimoHint]);
+
+  const addMimo = () => {
+    if (!session.beginMimo()) return;
+    setMoreOpen(false);
+    try {
+      if (!localStorage.getItem(MIMO_HINT_KEY)) {
+        localStorage.setItem(MIMO_HINT_KEY, '1');
+        setMimoHint(true);
+      }
+    } catch {
+      // stockage indisponible: pas d'indication
+    }
+  };
+
+  const placeMimo = () => {
+    if (!session.placeMimo()) return;
+    setMimoHint(false);
+    setPopped(true);
+    window.setTimeout(() => setPopped(false), 320);
+  };
 
   useEffect(() => {
     document.body.classList.add('editing');
@@ -72,9 +109,10 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
       } else if (mod && e.key.toLowerCase() === 'x') {
         session.cut();
       } else if (!mod && e.key === 'Enter') {
-        session.commitFloating();
+        if (!session.placeMimo()) session.commitFloating();
       } else if (!mod && e.key === 'Escape') {
-        session.cancelFloating();
+        if (session.mimo) session.cancelMimo();
+        else session.cancelFloating();
       } else if (!mod && e.key === 'Delete') {
         session.deleteSelection();
       } else if (!mod && e.key === '+') {
@@ -99,7 +137,7 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
         <span className="spacer" />
         <ToyButton variant="soft" size="s" iconOnly icon="undo" onClick={() => session.undo()} disabled={!session.canUndo} aria-label="Annuler" title="Annuler" />
         <ToyButton variant="soft" size="s" iconOnly icon="redo" onClick={() => session.redo()} disabled={!session.canRedo} aria-label="Rétablir" title="Rétablir" />
-        <ToyButton variant="primary" size="s" icon="share" onClick={() => { session.flush(); setPublishOpen(true); }}>Publier ma case</ToyButton>
+        <ToyButton variant="primary" size="s" icon="share" onClick={() => { session.placeMimo(); session.flush(); setPublishOpen(true); }}>Publier ma case</ToyButton>
       </header>
 
       <div className="ed-brief-row">
@@ -109,7 +147,7 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
         )}
       </div>
 
-      <div className="ed-stage" onPointerDownCapture={() => moreOpen && closesDrawerOnDraw(session.tool) && setMoreOpen(false)}>
+      <div className={`ed-stage ${popped ? 'is-popped' : ''}`} onPointerDownCapture={() => moreOpen && closesDrawerOnDraw(session.tool) && setMoreOpen(false)}>
         <Stage session={session} version={version} handleRef={stage} />
         {session.floating && (
           <div className="ed-floating" role="group" aria-label={session.floating.stamp ? 'Tampon en cours de placement' : 'Sélection en cours de déplacement'}>
@@ -118,7 +156,8 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
             <ToyButton variant="soft" size="s" icon="close" onClick={() => session.cancelFloating()}>Annuler</ToyButton>
           </div>
         )}
-        <div className="ed-zoom" role="group" aria-label="Zoom">
+        {mimoHint && session.mimo && <MimoHint />}
+        <div className="ed-zoom" role="group" aria-label="Zoom" hidden={!!session.mimo}>
           <ToyButton variant="soft" size="s" iconOnly icon="plus" onClick={() => stage.current?.zoomBy(1.25)} aria-label="Zoom avant" />
           <ToyButton variant="soft" size="s" iconOnly icon="minus" onClick={() => stage.current?.zoomBy(0.8)} aria-label="Zoom arrière" />
           <ToyButton variant="soft" size="s" iconOnly onClick={() => stage.current?.fit()} aria-label="Ajuster la vue">1:1</ToyButton>
@@ -126,15 +165,21 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
       </div>
 
       <section className="ed-console" aria-label="Outils de dessin">
-        {moreOpen && (
-          <div className="ed-more" id="ed-more">
-            <SecondaryTools session={session} />
-            <OptionsRow session={session} onStampPicked={() => setMoreOpen(false)} />
-            <SettingsPanel session={session} />
-          </div>
+        {session.mimo ? (
+          <MimoConsole session={session} onPlace={placeMimo} />
+        ) : (
+          <>
+            {moreOpen && (
+              <div className="ed-more" id="ed-more">
+                <SecondaryTools session={session} />
+                <OptionsRow session={session} onStampPicked={() => setMoreOpen(false)} />
+                <SettingsPanel session={session} />
+              </div>
+            )}
+            <ToolRow session={session} moreOpen={moreOpen} onMore={() => setMoreOpen((v) => !v)} onMimo={phone ? addMimo : undefined} />
+            <ColorRow session={session} />
+          </>
         )}
-        <ToolRow session={session} moreOpen={moreOpen} onMore={() => setMoreOpen((v) => !v)} />
-        <ColorRow session={session} />
       </section>
 
       {parentId && (
