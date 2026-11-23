@@ -15,6 +15,7 @@ import {
 import { HEIGHT, PIXELS, WIDTH } from './palette';
 import { newProject, type Project } from './project';
 import { MIMO_DEFAULT, FX_DURATION, clampCenter, clampSize, drawMimo, type MimoAxis, type MimoState } from './mimo/mimo';
+import { TEXT_DEFAULT, TEXT_MAX, TEXT_MIN, clampTextCenter, drawText, limitText, textDims, textSizeOf, type TextState } from './text/text';
 import { MIMO_DESIGNS, MIMO_EMOTIONS, MIMO_POSES } from './mimo/art';
 import { REWARD_CONFIG, TRANSPARENT, parseArt, scaleSprite, stickerById, type Sprite } from '../domain/stickers';
 
@@ -59,6 +60,8 @@ export class EditorSession {
   version = 0;
   /** Mimo en cours de placement (modifiable jusqu'à « Placer » ou « Annuler »). */
   mimo: MimoState | null = null;
+  /** Texte en cours de placement (modifiable jusqu'à « Placer » ou « Annuler »). */
+  text: TextState | null = null;
   /** Préférence système: pas d'animation des Mimo. */
   reducedMotion = false;
   /** Nombre de tampons posés au plus sur une case (réglage, jamais une contrainte de dessin). */
@@ -74,6 +77,7 @@ export class EditorSession {
   private dragging: { start: Point; startDx: number; startDy: number } | null = null;
   private floatView: Project | null = null;
   private mimoView: Project | null = null;
+  private textView: Project | null = null;
 
   constructor(project: Project = newProject()) {
     this.project = project;
@@ -97,8 +101,15 @@ export class EditorSession {
   current(): Project {
     if (this.stroke) return this.stroke.live;
     if (this.mimo) return (this.mimoView ??= this.buildMimoView());
+    if (this.text) return (this.textView ??= this.buildTextView());
     if (this.floating) return (this.floatView ??= this.buildFloatView());
     return this.project;
+  }
+
+  private buildTextView(): Project {
+    const pixels = this.project.pixels.slice();
+    drawText(pixels, this.text!);
+    return { pixels };
   }
 
   private buildMimoView(): Project {
@@ -133,7 +144,7 @@ export class EditorSession {
   // ───────────── Historique ─────────────
 
   get canUndo() {
-    return this.mimo !== null || this.floating !== null || this.history.length > 0;
+    return this.mimo !== null || this.text !== null || this.floating !== null || this.history.length > 0;
   }
   get canRedo() {
     return this.future.length > 0;
@@ -151,12 +162,14 @@ export class EditorSession {
   private afterProjectChange() {
     this.floatView = null;
     this.mimoView = null;
+    this.textView = null;
     this.notify();
   }
 
   undo() {
-    if (this.mimo) {
+    if (this.mimo || this.text) {
       this.cancelMimo();
+      this.cancelText();
       return;
     }
     if (this.stroke) return;
@@ -173,7 +186,7 @@ export class EditorSession {
   }
 
   redo() {
-    if (this.stroke || this.floating || this.mimo) return;
+    if (this.stroke || this.floating || this.mimo || this.text) return;
     const next = this.future.pop();
     if (!next) return;
     this.history.push(this.project);
@@ -185,7 +198,7 @@ export class EditorSession {
   // ───────────── Entrées pointeur (coordonnées logiques 320×240, flottantes) ─────────────
 
   pointerDown(x: number, y: number, pressure = 1) {
-    if (this.mimo) return; // un Mimo en cours de placement ne laisse rien dessiner
+    if (this.mimo || this.text) return; // un objet en cours de placement ne laisse rien dessiner
     const p = { x, y, pressure };
     switch (this.tool) {
       case 'pen':
@@ -439,7 +452,7 @@ export class EditorSession {
   /** Soulève un tampon au centre de la toile: il reste mobile jusqu'à « OK » ou « Annuler ». */
   beginStamp(id: string, scale: number = this.stampScale): boolean {
     const def = stickerById(id);
-    if (!def || this.mimo) return false;
+    if (!def || this.mimo || this.text) return false;
     this.commitFloating();
     if (!this.canStamp) return false;
     const sprite = cropSprite(parseArt(def.art));
@@ -489,7 +502,7 @@ export class EditorSession {
 
   /** Pose un Mimo au centre de la toile: il reste modifiable jusqu'à « Placer » ou « Annuler ». */
   beginMimo(): boolean {
-    if (this.mimo) return false;
+    if (this.mimo || this.text) return false;
     this.commitFloating();
     this.selection = null;
     this.mimo = { spec: { design: 0, emotion: 0, pose: 0 }, cx: WIDTH / 2, cy: HEIGHT / 2, size: MIMO_DEFAULT, fx: null };
@@ -554,10 +567,72 @@ export class EditorSession {
     this.notify();
   }
 
+  // ───────────── Texte libre ─────────────
+
+  /** Ouvre un texte vide au centre de la toile: il apparaît en noir dès qu'on écrit, et reste mobile jusqu'à « Placer ». */
+  beginText(): boolean {
+    if (this.mimo || this.text) return false;
+    this.commitFloating();
+    this.selection = null;
+    this.text = { value: '', cx: WIDTH / 2, cy: HEIGHT / 2, size: TEXT_DEFAULT };
+    this.textView = null;
+    this.notify();
+    return true;
+  }
+
+  private refitText() {
+    const t = this.text!;
+    Object.assign(t, clampTextCenter(t.value, textSizeOf(t), t.cx, t.cy));
+    this.textView = null;
+    this.notify();
+  }
+
+  textSet(value: string) {
+    if (!this.text) return;
+    this.text.value = limitText(value);
+    this.refitText();
+  }
+
+  textMoveTo(x: number, y: number) {
+    if (!this.text) return;
+    this.text.cx = x;
+    this.text.cy = y;
+    this.refitText();
+  }
+
+  textResize(size: number) {
+    if (!this.text) return;
+    this.text.size = Math.min(TEXT_MAX, Math.max(TEXT_MIN, Math.round(size)));
+    this.refitText();
+  }
+
+  /** Vrai si le texte contient au moins une lettre que la police sait dessiner. */
+  get textReady() {
+    return !!this.text && textDims(this.text.value, textSizeOf(this.text)).w > 0;
+  }
+
+  /** Écrit le texte sur la toile (une entrée d'historique, comme un trait) et rend la main au crayon. */
+  placeText(): boolean {
+    const t = this.text;
+    if (!t || !this.textReady) return false;
+    const pixels = this.project.pixels.slice();
+    drawText(pixels, t);
+    this.text = null;
+    this.commit({ pixels });
+    return true;
+  }
+
+  cancelText() {
+    if (!this.text) return;
+    this.text = null;
+    this.textView = null;
+    this.notify();
+  }
+
   // ───────────── Réglages d'outils ─────────────
 
   setTool(tool: Tool) {
-    if (this.mimo) return;
+    if (this.mimo || this.text) return;
     if (tool !== 'move') this.commitFloating();
     this.tool = tool;
     this.notify();

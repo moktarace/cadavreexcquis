@@ -170,3 +170,19 @@ body.editing { overflow: hidden; position: fixed; inset: 0; width: 100%; overscr
 }
 @media (max-width: 360px) { .mimo-hint { white-space: normal; } }
 @media (orientation: landscape) and (min-width: 560px) { .mimo-zones { grid-template-columns: 1fr; } }
+
+/* Cinq commandes dans la rangée d'outils: elles se partagent la largeur. */
+.ed-tools { gap: 6px; }
+.ed-tools__gap { display: none; }
+.ed-tools .tool-btn { flex: 1 1 0; width: auto; min-width: 0; padding-inline: 2px; }
+
+/* ───────────── Texte libre ───────────── */
+.text-console { display: grid; gap: 8px; padding-bottom: 2px; }
+.text-input { width: 100%; min-height: 64px; resize: none; font: 800 1rem / 1.25 var(--font-body); -webkit-user-select: text; user-select: text; touch-action: manipulation; }
+.text-actions { display: grid; grid-template-columns: 1fr 1.3fr; gap: 8px; }
+.text-actions .toy-btn { min-height: 52px; touch-action: manipulation; }
+.text-limit, .text-help { margin: 0; }
+.text-limit { color: var(--danger-deep); font-weight: 800; }
+.text-help--mouse { display: none; }
+@media (hover: hover) and (pointer: fine) { .text-help--touch { display: none; } .text-help--mouse { display: inline; } }
+@media (orientation: landscape) and (min-width: 560px) { .text-input { min-height: 88px; } }

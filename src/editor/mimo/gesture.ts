@@ -1,21 +1,57 @@
+import { textRect, textSizeOf, type TextState } from '../text/text';
 import { mimoRect, type MimoState } from './mimo';
 
-/** Ce dont la reconnaissance des gestes a besoin de l'éditeur. */
-export interface MimoTarget {
-  mimo: MimoState | null;
-  mimoStep(axis: 'pose'): void;
-  mimoMoveTo(x: number, y: number): void;
-  mimoResize(size: number): void;
+/** Un objet en cours de placement (Mimo ou texte): ce que les gestes ont besoin de lui demander. */
+export interface Placeable {
+  /** Rectangle occupé, en pixels de la toile; null si rien n'est encore à manipuler (texte vide). */
+  rect(): { left: number; top: number; w: number; h: number } | null;
+  center(): { x: number; y: number };
+  size(): number;
+  moveTo(x: number, y: number): void;
+  resize(size: number): void;
+  /** Appui bref sur l'objet (Mimo: pose suivante; texte: rouvrir la saisie). */
+  tap(): void;
+}
+
+export function mimoPlaceable(s: { mimo: MimoState | null; mimoStep(axis: 'pose'): void; mimoMoveTo(x: number, y: number): void; mimoResize(size: number): void }): Placeable {
+  return {
+    rect: () => (s.mimo ? mimoRect({ ...s.mimo, fx: null }) : null),
+    center: () => ({ x: s.mimo?.cx ?? 0, y: s.mimo?.cy ?? 0 }),
+    size: () => s.mimo?.size ?? 1,
+    moveTo: (x, y) => s.mimoMoveTo(x, y),
+    resize: (size) => s.mimoResize(size),
+    tap: () => s.mimoStep('pose'),
+  };
+}
+
+export function textPlaceable(
+  s: { text: TextState | null; textMoveTo(x: number, y: number): void; textResize(size: number): void },
+  onTap: () => void,
+): Placeable {
+  return {
+    rect: () => {
+      if (!s.text) return null;
+      const r = textRect(s.text);
+      return r.w ? r : null;
+    },
+    center: () => ({ x: s.text?.cx ?? 0, y: s.text?.cy ?? 0 }),
+    size: () => (s.text ? textSizeOf(s.text) : 1),
+    moveTo: (x, y) => s.textMoveTo(x, y),
+    resize: (size) => s.textResize(size),
+    tap: onTap,
+  };
 }
 
 /** Glissement (px écran) au-delà duquel un appui devient un déplacement. */
 export const TAP_SLOP = 8;
-/** Un appui plus long n'est pas un « tap » (évite de changer de pose en posant le doigt pour viser). */
+/** Un appui plus long n'est pas un « tap » (évite d'agir en posant le doigt pour viser). */
 export const TAP_MAX_MS = 400;
-/** Zone de prise minimale (px de la toile) autour d'un petit Mimo. */
+/** Zone de prise minimale (px de la toile) autour d'un petit objet. */
 const MIN_REACH = 30;
+/** Rayon (px de la toile) de la poignée de taille, au coin bas droit. */
+export const HANDLE_REACH = 16;
 
-type Mode = 'none' | 'press' | 'drag' | 'pinch' | 'ignore';
+type Mode = 'none' | 'press' | 'drag' | 'pinch' | 'handle' | 'ignore';
 
 interface Pointer {
   x: number;
@@ -23,19 +59,20 @@ interface Pointer {
 }
 
 /**
- * Un doigt sur le Mimo: tap = pose suivante, glissement = déplacement (jamais l'un à la place de l'autre).
- * Deux doigts: taille seulement. Un doigt hors du Mimo, ou resté après un pincement, ne fait rien.
- * Émotion et style passent par leurs zones dédiées: un geste de déplacement ne peut pas les déclencher.
+ * Un pointeur sur l'objet: appui bref = action de l'objet, glissement = déplacement (jamais l'un à la place de l'autre).
+ * Deux doigts, ou la poignée du coin (souris, stylet, doigt): taille seulement, proportions conservées.
+ * Un pointeur hors de l'objet, ou resté après un pincement, ne fait rien.
  */
-export class MimoGesture {
+export class ObjectGesture {
   private mode: Mode = 'none';
   private pointers = new Map<number, Pointer>();
   private press: { id: number; x: number; y: number; t0: number } | null = null;
   private grab = { dx: 0, dy: 0 };
   private pinch = { dist: 1, size: 1 };
+  private handle = { id: -1, dist: 1, size: 1 };
 
   constructor(
-    private readonly target: MimoTarget,
+    private readonly target: Placeable,
     /** Conversion d'un point écran en pixels de la toile. */
     private readonly toCanvas: (x: number, y: number) => { x: number; y: number },
   ) {}
@@ -50,12 +87,16 @@ export class MimoGesture {
   }
 
   private hits(x: number, y: number): boolean {
-    const m = this.target.mimo;
-    if (!m) return false;
-    const r = mimoRect({ ...m, fx: null });
+    const r = this.target.rect();
+    if (!r) return false;
     const cx = r.left + r.w / 2;
     const cy = r.top + r.h / 2;
     return Math.abs(x - cx) <= Math.max(r.w / 2, MIN_REACH) && Math.abs(y - cy) <= Math.max(r.h / 2, MIN_REACH);
+  }
+
+  private onHandle(x: number, y: number): boolean {
+    const r = this.target.rect();
+    return !!r && Math.hypot(x - (r.left + r.w), y - (r.top + r.h)) <= HANDLE_REACH;
   }
 
   private pair(): [Pointer, Pointer] | null {
@@ -64,54 +105,62 @@ export class MimoGesture {
   }
 
   down(id: number, x: number, y: number, now: number) {
-    const m = this.target.mimo;
-    if (!m) return;
+    if (!this.target.rect()) return;
     this.pointers.set(id, { x, y });
     if (this.pointers.size >= 2) {
       const [a, b] = this.pair()!;
       this.press = null;
       this.mode = 'pinch';
-      this.pinch = { dist: Math.hypot(a.x - b.x, a.y - b.y) || 1, size: m.size };
+      this.pinch = { dist: Math.hypot(a.x - b.x, a.y - b.y) || 1, size: this.target.size() };
       return;
     }
     const p = this.toCanvas(x, y);
-    if (!this.hits(p.x, p.y)) {
-      this.mode = 'ignore';
-      return;
-    }
-    this.mode = 'press';
-    this.press = { id, x, y, t0: now };
+    if (this.onHandle(p.x, p.y)) {
+      const c = this.target.center();
+      this.mode = 'handle';
+      this.press = { id, x, y, t0: now }; // un simple appui sur la poignée vaut un tap
+      this.handle = { id, dist: Math.max(4, Math.hypot(p.x - c.x, p.y - c.y)), size: this.target.size() };
+    } else if (this.hits(p.x, p.y)) {
+      this.mode = 'press';
+      this.press = { id, x, y, t0: now };
+    } else this.mode = 'ignore';
   }
 
   move(id: number, x: number, y: number) {
     const known = this.pointers.get(id);
-    const m = this.target.mimo;
-    if (!known || !m) return;
+    if (!known || !this.target.rect()) return;
     known.x = x;
     known.y = y;
     if (this.mode === 'press' && this.press?.id === id) {
       if (Math.hypot(x - this.press.x, y - this.press.y) < TAP_SLOP) return;
       // Le déplacement part d'ici: pas de saut au moment où le geste est reconnu.
       const p = this.toCanvas(x, y);
-      this.grab = { dx: m.cx - p.x, dy: m.cy - p.y };
+      const c = this.target.center();
+      this.grab = { dx: c.x - p.x, dy: c.y - p.y };
       this.mode = 'drag';
       this.press = null;
     }
     if (this.mode === 'drag') {
       const p = this.toCanvas(x, y);
-      this.target.mimoMoveTo(p.x + this.grab.dx, p.y + this.grab.dy);
+      this.target.moveTo(p.x + this.grab.dx, p.y + this.grab.dy);
+    } else if (this.mode === 'handle' && this.handle.id === id) {
+      if (this.press && Math.hypot(x - this.press.x, y - this.press.y) < TAP_SLOP) return;
+      this.press = null;
+      const p = this.toCanvas(x, y);
+      const c = this.target.center();
+      this.target.resize((this.handle.size * Math.hypot(p.x - c.x, p.y - c.y)) / this.handle.dist);
     } else if (this.mode === 'pinch') {
       const pr = this.pair();
       if (!pr) return;
-      this.target.mimoResize((this.pinch.size * (Math.hypot(pr[0].x - pr[1].x, pr[0].y - pr[1].y) || 1)) / this.pinch.dist);
+      this.target.resize((this.pinch.size * (Math.hypot(pr[0].x - pr[1].x, pr[0].y - pr[1].y) || 1)) / this.pinch.dist);
     }
   }
 
   up(id: number, now: number, cancelled = false) {
     if (!this.pointers.has(id)) return;
     this.pointers.delete(id);
-    if (this.mode === 'press' && this.press?.id === id) {
-      if (!cancelled && now - this.press.t0 <= TAP_MAX_MS) this.target.mimoStep('pose');
+    if ((this.mode === 'press' || this.mode === 'handle') && this.press?.id === id) {
+      if (!cancelled && now - this.press.t0 <= TAP_MAX_MS) this.target.tap();
       this.press = null;
     }
     if (this.mode === 'pinch' && this.pointers.size < 2) this.mode = 'ignore';

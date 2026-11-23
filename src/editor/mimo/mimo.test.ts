@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { PALETTE, HEIGHT, WIDTH } from '../palette';
 import { EditorSession } from '../session';
 import { MIMO_DESIGNS, MIMO_EMOTIONS, MIMO_POSES, mimoShapes, type MimoSpec } from './art';
-import { MimoGesture, TAP_MAX_MS, TAP_SLOP } from './gesture';
+import { ObjectGesture, TAP_MAX_MS, TAP_SLOP, mimoPlaceable } from './gesture';
 import { FX_DURATION, MIMO_INK, MIMO_MAX, MIMO_MIN, fxScale, mimoRect } from './mimo';
 import { rasterMimo } from './raster';
 
@@ -336,7 +336,7 @@ describe('gestes', () => {
     s.beginMimo();
     s.mimoResize(size);
     // 1 pixel de toile = 1 pixel d'écran
-    const g = new MimoGesture(s, (x, y) => ({ x, y }));
+    const g = new ObjectGesture(mimoPlaceable(s), (x, y) => ({ x, y }));
     return { s, g };
   }
   const center = { x: WIDTH / 2, y: HEIGHT / 2 };

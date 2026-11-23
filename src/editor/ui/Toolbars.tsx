@@ -38,7 +38,7 @@ function toolButton(session: EditorSession, t: (typeof TOOLS)[number], className
 }
 
 /** Commandes essentielles: stylo, gomme, et l'accès à la palette d'outils secondaire. */
-export function ToolRow({ session, moreOpen, onMore, onMimo }: { session: EditorSession; moreOpen: boolean; onMore: () => void; onMimo?: () => void }) {
+export function ToolRow({ session, moreOpen, onMore, onMimo, onText }: { session: EditorSession; moreOpen: boolean; onMore: () => void; onMimo?: () => void; onText?: () => void }) {
   const other = TOOLS.find((t) => t.id === session.tool && !ESSENTIAL.includes(t.id));
   return (
     <div className="ed-tools" role="toolbar" aria-label="Outils">
@@ -55,6 +55,11 @@ export function ToolRow({ session, moreOpen, onMore, onMimo }: { session: Editor
           onClick={onMimo}
         >
           Mimo
+        </ToyButton>
+      )}
+      {onText && (
+        <ToyButton className="tool-btn tool-btn--more tool-btn--mimo" variant="soft" size="s" icon="plus" aria-label="Ajouter du texte" title="Ajouter du texte" onClick={onText}>
+          Texte
         </ToyButton>
       )}
       <ToyButton

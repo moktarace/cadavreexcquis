@@ -57,11 +57,9 @@ function fillPolygon(m: Uint8Array, w: number, h: number, pts: number[], value: 
   }
 }
 
-function draw(shapes: readonly Shape[], w: number, h: number): Uint8Array {
+/** Trace des formes (unités du dessin) dans un masque w × h: sx, sy = pixels par unité, base = épaisseur de base en pixels. */
+export function drawShapes(shapes: readonly Shape[], w: number, h: number, sx: number, sy: number, base: number): Uint8Array {
   const m = new Uint8Array(w * h);
-  const sx = w / BOX;
-  const sy = h / BOX;
-  const base = strokeWidth(w, h);
   const scaled = (pts: number[]) => pts.map((v, i) => (i % 2 ? v * sy : v * sx));
   for (const s of shapes) {
     if (s.k === 'line') {
@@ -85,7 +83,7 @@ export function rasterMimo(spec: MimoSpec, w: number, h: number): MimoMask {
   const key = `${spec.design}.${spec.emotion}.${spec.pose}@${w}x${h}`;
   const hit = cache.get(key);
   if (hit) return hit;
-  const out = { w, h, mask: draw(mimoShapes(spec), w, h) };
+  const out = { w, h, mask: drawShapes(mimoShapes(spec), w, h, w / BOX, h / BOX, strokeWidth(w, h)) };
   cache.set(key, out);
   if (cache.size > 24) cache.delete(cache.keys().next().value!);
   return out;

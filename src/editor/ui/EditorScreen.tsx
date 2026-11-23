@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { flushSync } from 'react-dom';
 import type { Target } from '../../backend/api';
-import { isPhoneTouch } from '../../app/platform';
 import { go } from '../../app/router';
 import { ToyButton, ToyDialog } from '../../ui';
 import { EditorSession, closesDrawerOnDraw } from '../session';
@@ -9,6 +9,7 @@ import { MimoConsole, MimoHint } from './MimoConsole';
 import { ContextPanel, PublishSheet } from './PublishSheet';
 import { SettingsPanel } from './Panels';
 import { Stage, type StageHandle } from './Stage';
+import { TextConsole } from './TextConsole';
 import { ColorRow, OptionsRow, SecondaryTools, StampSize, ToolRow } from './Toolbars';
 
 const PREFS_KEY = 'cl.editorPrefs.v1';
@@ -28,8 +29,8 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
   const [contextOpen, setContextOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
   const stage = useRef<StageHandle | null>(null);
-  // Les Mimo sont réservés aux téléphones tactiles (ni ordinateur, ni iPad avec stylet).
-  const phone = useMemo(() => isPhoneTouch(), []);
+  const editor = useRef<HTMLDivElement>(null);
+  const textInput = useRef<HTMLTextAreaElement>(null);
   const [mimoHint, setMimoHint] = useState(false);
   const [popped, setPopped] = useState(false);
 
@@ -55,6 +56,42 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
       // stockage indisponible: pas d'indication
     }
   };
+
+  // L'ouverture du clavier doit se faire dans le geste de l'utilisateur: on rend le champ tout de suite, puis on lui donne le focus.
+  const addText = () => {
+    setMoreOpen(false);
+    flushSync(() => {
+      session.beginText();
+    });
+    textInput.current?.focus({ preventScroll: true });
+  };
+
+  const placeText = () => {
+    if (!session.placeText()) return;
+    setPopped(true);
+    window.setTimeout(() => setPopped(false), 320);
+  };
+
+  // Clavier virtuel: la console suit le bas de la zone réellement visible, les boutons restent accessibles.
+  const typing = !!session.text;
+  useEffect(() => {
+    const vv = window.visualViewport;
+    const el = editor.current;
+    if (!typing || !vv || !el) return;
+    const fit = () => {
+      el.style.height = `${vv.height}px`;
+      el.style.transform = `translateY(${vv.offsetTop}px)`;
+    };
+    fit();
+    vv.addEventListener('resize', fit);
+    vv.addEventListener('scroll', fit);
+    return () => {
+      vv.removeEventListener('resize', fit);
+      vv.removeEventListener('scroll', fit);
+      el.style.height = '';
+      el.style.transform = '';
+    };
+  }, [typing]);
 
   const placeMimo = () => {
     if (!session.placeMimo()) return;
@@ -93,7 +130,7 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.target instanceof HTMLTextAreaElement) return;
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key.toLowerCase() === 'z') {
         e.preventDefault();
@@ -109,9 +146,10 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
       } else if (mod && e.key.toLowerCase() === 'x') {
         session.cut();
       } else if (!mod && e.key === 'Enter') {
-        if (!session.placeMimo()) session.commitFloating();
+        if (!session.placeMimo() && !session.placeText()) session.commitFloating();
       } else if (!mod && e.key === 'Escape') {
         if (session.mimo) session.cancelMimo();
+        else if (session.text) session.cancelText();
         else session.cancelFloating();
       } else if (!mod && e.key === 'Delete') {
         session.deleteSelection();
@@ -131,13 +169,13 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
   }, [session]);
 
   return (
-    <div className="editor">
+    <div className="editor" ref={editor}>
       <header className="ed-top">
         <ToyButton className="ed-collapse" variant="soft" size="s" icon="back" onClick={onClose} aria-label="Quitter l'éditeur">Quitter</ToyButton>
         <span className="spacer" />
         <ToyButton variant="soft" size="s" iconOnly icon="undo" onClick={() => session.undo()} disabled={!session.canUndo} aria-label="Annuler" title="Annuler" />
         <ToyButton variant="soft" size="s" iconOnly icon="redo" onClick={() => session.redo()} disabled={!session.canRedo} aria-label="Rétablir" title="Rétablir" />
-        <ToyButton variant="primary" size="s" icon="share" onClick={() => { session.placeMimo(); session.flush(); setPublishOpen(true); }}>Publier ma case</ToyButton>
+        <ToyButton variant="primary" size="s" icon="share" onClick={() => { session.placeMimo(); if (!session.placeText()) session.cancelText(); session.flush(); setPublishOpen(true); }}>Publier ma case</ToyButton>
       </header>
 
       <div className="ed-brief-row">
@@ -148,7 +186,7 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
       </div>
 
       <div className={`ed-stage ${popped ? 'is-popped' : ''}`} onPointerDownCapture={() => moreOpen && closesDrawerOnDraw(session.tool) && setMoreOpen(false)}>
-        <Stage session={session} version={version} handleRef={stage} />
+        <Stage session={session} version={version} handleRef={stage} onTextTap={() => textInput.current?.focus({ preventScroll: true })} />
         {session.floating && (
           <div className="ed-floating" role="group" aria-label={session.floating.stamp ? 'Tampon en cours de placement' : 'Sélection en cours de déplacement'}>
             {session.floating.stamp && <StampSize session={session} />}
@@ -157,7 +195,7 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
           </div>
         )}
         {mimoHint && session.mimo && <MimoHint />}
-        <div className="ed-zoom" role="group" aria-label="Zoom" hidden={!!session.mimo}>
+        <div className="ed-zoom" role="group" aria-label="Zoom" hidden={!!session.mimo || !!session.text}>
           <ToyButton variant="soft" size="s" iconOnly icon="plus" onClick={() => stage.current?.zoomBy(1.25)} aria-label="Zoom avant" />
           <ToyButton variant="soft" size="s" iconOnly icon="minus" onClick={() => stage.current?.zoomBy(0.8)} aria-label="Zoom arrière" />
           <ToyButton variant="soft" size="s" iconOnly onClick={() => stage.current?.fit()} aria-label="Ajuster la vue">1:1</ToyButton>
@@ -167,6 +205,8 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
       <section className="ed-console" aria-label="Outils de dessin">
         {session.mimo ? (
           <MimoConsole session={session} onPlace={placeMimo} />
+        ) : session.text ? (
+          <TextConsole session={session} inputRef={textInput} onPlace={placeText} />
         ) : (
           <>
             {moreOpen && (
@@ -176,7 +216,7 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
                 <SettingsPanel session={session} />
               </div>
             )}
-            <ToolRow session={session} moreOpen={moreOpen} onMore={() => setMoreOpen((v) => !v)} onMimo={phone ? addMimo : undefined} />
+            <ToolRow session={session} moreOpen={moreOpen} onMore={() => setMoreOpen((v) => !v)} onMimo={addMimo} onText={addText} />
             <ColorRow session={session} />
           </>
         )}

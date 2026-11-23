@@ -2,8 +2,9 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { HEIGHT, WIDTH } from '../palette';
 import { indexedToRgba } from '../render';
 import type { EditorSession } from '../session';
-import { MimoGesture } from '../mimo/gesture';
+import { ObjectGesture, mimoPlaceable, textPlaceable } from '../mimo/gesture';
 import { mimoRect } from '../mimo/mimo';
+import { textRect } from '../text/text';
 
 interface View {
   zoom: number;
@@ -24,9 +25,11 @@ interface Props {
   session: EditorSession;
   version: number;
   handleRef?: React.MutableRefObject<StageHandle | null>;
+  /** Appui bref sur le texte en cours de placement (rouvre la saisie). */
+  onTextTap?: () => void;
 }
 
-export function Stage({ session, version, handleRef }: Props) {
+export function Stage({ session, version, handleRef, onTextTap }: Props) {
   const box = useRef<HTMLDivElement>(null);
   const board = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -43,7 +46,12 @@ export function Stage({ session, version, handleRef }: Props) {
   const lastPan = useRef({ x: 0, y: 0 });
   const gesture = useRef({ dist: 1, cx: 0, cy: 0 });
   const spaceHeld = useRef(false);
-  const gestureOf = useRef<MimoGesture | null>(null);
+  const mimoGesture = useRef<ObjectGesture | null>(null);
+  const textGesture = useRef<ObjectGesture | null>(null);
+  const tapRef = useRef(onTextTap);
+  // Le focus (donc le clavier) se prend dans l'événement « click »: sur iOS, c'est le seul endroit où il est accordé après un tap.
+  const tapPending = useRef(false);
+  tapRef.current = onTextTap;
 
   // Taille du plateau: le plus grand agrandissement qui tient dans la zone, marge comprise.
   const fit = Math.max(0.5, Math.min((size.w - 8) / WIDTH, (size.h - 8) / HEIGHT));
@@ -99,7 +107,11 @@ export function Stage({ session, version, handleRef }: Props) {
 
     const o = overlay.current!.getContext('2d')!;
     o.clearRect(0, 0, WIDTH, HEIGHT);
-    if (session.mimo) drawMimoFrame(o, mimoRect({ ...session.mimo, fx: null }));
+    if (session.mimo) drawFrame(o, mimoRect({ ...session.mimo, fx: null }));
+    else if (session.text) {
+      const r = textRect(session.text);
+      if (r.w) drawFrame(o, r);
+    }
     const mask = session.outline();
     if (mask) {
       o.fillStyle = '#000';
@@ -137,8 +149,17 @@ export function Stage({ session, version, handleRef }: Props) {
     };
   };
 
-  const mimoGesture = (): MimoGesture =>
-    (gestureOf.current ??= new MimoGesture(session, (x, y) => toLogical(x, y)));
+  /** Geste de l'objet en cours de placement (Mimo ou texte), créé à la demande. */
+  const placing = (): ObjectGesture | null => {
+    if (session.text) return (textGesture.current ??= new ObjectGesture(textPlaceable(session, () => { tapPending.current = true; }), (x, y) => toLogical(x, y)));
+    if (session.mimo) return (mimoGesture.current ??= new ObjectGesture(mimoPlaceable(session), (x, y) => toLogical(x, y)));
+    return null;
+  };
+  const gestureActive = () => !!(mimoGesture.current?.active || textGesture.current?.active);
+  const resetGestures = () => {
+    mimoGesture.current?.reset();
+    textGesture.current?.reset();
+  };
 
   // Animation très courte d'un changement de pose, d'émotion ou de style.
   const fxStart = session.mimo?.fx?.t0;
@@ -154,7 +175,7 @@ export function Stage({ session, version, handleRef }: Props) {
 
   // Rotation ou perte de focus: le geste en cours est abandonné, rien n'est validé.
   useEffect(() => {
-    const reset = () => gestureOf.current?.reset();
+    const reset = () => resetGestures();
     window.addEventListener('blur', reset);
     window.addEventListener('orientationchange', reset);
     return () => {
@@ -164,14 +185,17 @@ export function Stage({ session, version, handleRef }: Props) {
   }, []);
 
   const onDown = (e: React.PointerEvent) => {
-    if (session.mimo || gestureOf.current?.active) {
-      // Un Mimo en cours de placement: ces gestes ne dessinent jamais.
+    if (session.mimo || session.text || gestureActive()) {
+      // Un Mimo ou un texte en cours de placement: ces gestes ne dessinent jamais.
+      // Pas d'événements souris « de compatibilité »: ils retireraient le focus (et le clavier) du champ de saisie.
+      e.preventDefault();
+      tapPending.current = false;
       try {
         e.currentTarget.setPointerCapture(e.pointerId);
       } catch {
         // pointeur déjà terminé
       }
-      if (session.mimo) mimoGesture().down(e.pointerId, e.clientX, e.clientY, e.timeStamp);
+      placing()?.down(e.pointerId, e.clientX, e.clientY, e.timeStamp);
       return;
     }
     if (e.pointerType === 'touch' && penDown.current) return; // rejet de la paume
@@ -205,8 +229,9 @@ export function Stage({ session, version, handleRef }: Props) {
   };
 
   const onMove = (e: React.PointerEvent) => {
-    if (gestureOf.current?.active) {
-      gestureOf.current.move(e.pointerId, e.clientX, e.clientY);
+    if (gestureActive()) {
+      mimoGesture.current?.move(e.pointerId, e.clientX, e.clientY);
+      textGesture.current?.move(e.pointerId, e.clientX, e.clientY);
       return;
     }
     const known = pointers.current.get(e.pointerId);
@@ -240,8 +265,9 @@ export function Stage({ session, version, handleRef }: Props) {
   };
 
   const onUp = (e: React.PointerEvent) => {
-    if (gestureOf.current?.active) {
-      gestureOf.current.up(e.pointerId, e.timeStamp, e.type === 'pointercancel');
+    if (gestureActive()) {
+      mimoGesture.current?.up(e.pointerId, e.timeStamp, e.type === 'pointercancel');
+      textGesture.current?.up(e.pointerId, e.timeStamp, e.type === 'pointercancel');
       return;
     }
     if (!pointers.current.has(e.pointerId)) return;
@@ -262,11 +288,13 @@ export function Stage({ session, version, handleRef }: Props) {
     const el = box.current!;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      if (e.ctrlKey || e.metaKey) zoomAt(e.clientX, e.clientY, viewRef.current.zoom * Math.exp(-e.deltaY * 0.01));
+      const object = session.text ? textPlaceable(session, () => {}) : session.mimo ? mimoPlaceable(session) : null;
+      if (object) object.resize(object.size() * Math.exp(-e.deltaY * 0.0025)); // molette: taille de l'objet en cours de placement
+      else if (e.ctrlKey || e.metaKey) zoomAt(e.clientX, e.clientY, viewRef.current.zoom * Math.exp(-e.deltaY * 0.01));
       else setView((v) => clamp({ ...v, x: v.x - e.deltaX, y: v.y - e.deltaY }));
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && !(e.target instanceof HTMLInputElement)) spaceHeld.current = true;
+      if (e.code === 'Space' && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) spaceHeld.current = true;
     };
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code === 'Space') spaceHeld.current = false;
@@ -285,7 +313,7 @@ export function Stage({ session, version, handleRef }: Props) {
     };
   });
 
-  const cursor = session.tool === 'hand' ? 'grab' : 'crosshair';
+  const cursor = session.mimo || session.text ? 'move' : session.tool === 'hand' ? 'grab' : 'crosshair';
 
   return (
     <div
@@ -296,6 +324,11 @@ export function Stage({ session, version, handleRef }: Props) {
       onPointerMove={onMove}
       onPointerUp={onUp}
       onPointerCancel={onUp}
+      onClick={() => {
+        if (!tapPending.current) return;
+        tapPending.current = false;
+        tapRef.current?.();
+      }}
       onContextMenu={(e) => e.preventDefault()}
     >
       <div
@@ -316,9 +349,9 @@ export function Stage({ session, version, handleRef }: Props) {
   );
 }
 
-/** Cadre du Mimo en cours de placement: coins noirs cerclés de blanc, visibles sur tout fond (jamais dans le dessin). */
-function drawMimoFrame(o: CanvasRenderingContext2D, r: { left: number; top: number; w: number; h: number }) {
-  const len = Math.max(6, Math.min(14, Math.round(r.w / 5)));
+/** Cadre de l'objet en cours de placement: coins et poignée de taille, noirs cerclés de blanc, visibles sur tout fond (jamais dans le dessin). */
+function drawFrame(o: CanvasRenderingContext2D, r: { left: number; top: number; w: number; h: number }) {
+  const len = Math.max(6, Math.min(14, Math.round(Math.min(r.w, r.h) / 4)));
   const right = r.left + r.w;
   const bottom = r.top + r.h;
   const corners: [number, number, number, number][] = [
@@ -335,4 +368,11 @@ function drawMimoFrame(o: CanvasRenderingContext2D, r: { left: number; top: numb
       o.fillRect(dx > 0 ? x - grow : x - t + grow, dy > 0 ? y - grow : y - len - grow, t, len + grow * 2);
     }
   }
+  // Poignée de taille au coin bas droit.
+  o.fillStyle = '#fff';
+  o.fillRect(right - 4, bottom - 4, 9, 9);
+  o.fillStyle = '#141414';
+  o.fillRect(right - 3, bottom - 3, 7, 7);
+  o.fillStyle = '#fff';
+  o.fillRect(right - 1, bottom - 1, 3, 3);
 }
