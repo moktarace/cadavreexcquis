@@ -1,0 +1,28 @@
+/* ───────────── Survivor (laboratoire) ───────────── */
+.sv-rules { margin: 0 0 var(--space-3); padding-left: var(--space-4); display: grid; gap: 4px; font-size: var(--text-s); font-weight: 700; }
+.sv-offer { display: grid; gap: var(--space-3); }
+.sv-upgrade { display: flex; gap: var(--space-3); align-items: center; margin-bottom: var(--space-2); }
+.sv-upgrade p { margin: 0; }
+.sv-bd { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-bottom: var(--space-3); }
+.sv-thumb { display: block; width: 100%; height: auto; aspect-ratio: 4 / 3; background: #fff; border: 2px solid var(--ink); border-radius: 4px; image-rendering: pixelated; }
+.sv-thumb--empty { background: repeating-linear-gradient(45deg, #fff, #fff 6px, var(--lavender-soft) 6px, var(--lavender-soft) 12px); }
+.sv-stats { margin: 0 0 var(--space-2); padding-left: var(--space-4); display: grid; gap: 4px; font-weight: 700; }
+.sv-review { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+.sv-review li { display: grid; gap: 4px; font-size: 0.78rem; font-weight: 700; }
+
+/* Repère de la case: consigne, jauge d'encre et petites commandes, sous la barre du haut de l'éditeur */
+.sv-brief { flex: 1; min-width: 0; display: grid; gap: 4px; color: #fff; }
+.sv-brief__top { display: flex; justify-content: space-between; gap: 8px; font: 800 0.74rem / 1.2 var(--font-body); color: var(--lavender-soft); }
+.sv-brief__top strong { color: #fff; font-weight: 900; }
+.sv-brief__top span { text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sv-dice { font-size: 1.15em; letter-spacing: 0.05em; vertical-align: -0.1em; }
+.sv-constraint { margin: 0; font: 900 0.86rem / 1.25 var(--font-body); text-wrap: balance; }
+.sv-brief__tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.sv-brief__tools .toy-btn--s { min-height: 36px; }
+.sv-empty { font: 900 0.8rem var(--font-body); color: var(--yellow); }
+.sv-notice { margin: 0; font: 800 0.76rem / 1.25 var(--font-body); color: var(--yellow); }
+.sv-gauge { position: relative; display: flex; height: 22px; background: rgba(0, 0, 0, 0.3); border: 2px solid #fff; border-radius: var(--radius-pill); overflow: hidden; }
+.sv-gauge__fill { background: var(--yellow); transition: width 120ms; }
+.sv-gauge__ghost { background: repeating-linear-gradient(45deg, var(--danger), var(--danger) 4px, #ff9aa5 4px, #ff9aa5 8px); transition: width 120ms; }
+.sv-gauge__text { position: absolute; inset: 0; display: grid; place-items: center; font: 900 0.72rem var(--font-body); color: var(--ink); mix-blend-mode: normal; text-shadow: 0 0 3px #fff, 0 0 3px #fff; }
+@media (prefers-reduced-motion: reduce) { .sv-gauge__fill, .sv-gauge__ghost { transition: none; } }

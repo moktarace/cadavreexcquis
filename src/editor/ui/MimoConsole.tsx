@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { DESIGN_NAMES, EMOTION_NAMES, MIMO_DESIGNS, MIMO_EMOTIONS } from '../mimo/art';
 import type { EditorSession } from '../session';
 import { PixelIcon, ToyButton } from '../../ui';
+import { placeLabel } from './placeLabel';
 
 /** Distance de glissement (px écran) pour passer à la variante suivante: un long glissement en enchaîne plusieurs. */
 const STEP = 30;
@@ -93,7 +94,7 @@ export function MimoConsole({ session, onPlace }: { session: EditorSession; onPl
       <div className="mimo-actions">
         <ToyButton variant="soft" icon="close" onClick={() => session.cancelMimo()}>Annuler</ToyButton>
         <ToyButton className="mimo-help" variant="ghost" size="s" iconOnly aria-label="Aide" aria-expanded={help} onClick={() => setHelp(!help)}>?</ToyButton>
-        <ToyButton className="mimo-place" variant="success" icon="check" onClick={onPlace}>Placer</ToyButton>
+        <ToyButton className="mimo-place" variant="success" icon="check" disabled={!session.canPlacePending} onClick={onPlace}>{placeLabel(session)}</ToyButton>
       </div>
       {help && <p className="hint mimo-helptext" role="status">{HELP}</p>}
     </div>

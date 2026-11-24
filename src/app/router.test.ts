@@ -20,6 +20,7 @@ describe('routeur par hash', () => {
     ['#/week/g1', { name: 'week', id: 'g1' }],
     ['#/archives', { name: 'archives' }],
     ['#/admin', { name: 'admin' }],
+    ['#/lab/survivor', { name: 'survivor' }],
   ])('analyse %s', (hash, route) => {
     expect(parseHash(hash)).toEqual(route);
   });
@@ -31,6 +32,9 @@ describe('routeur par hash', () => {
     expect(parseHash('#/week/%20')).toEqual({ name: 'archives' });
     expect(parseHash('#/published')).toEqual({ name: 'home' });
     expect(parseHash('#/reply')).toEqual({ name: 'mine' });
+    expect(parseHash('#/lab')).toEqual({ name: 'home' });
+    expect(parseHash('#/lab/autre')).toEqual({ name: 'home' });
+    expect(parseHash('#/survivor')).toEqual({ name: 'home' });
   });
 
   it('produit des liens qui se relisent à l’identique', () => {
@@ -47,6 +51,7 @@ describe('routeur par hash', () => {
       { name: 'published', id: 'p2' },
       { name: 'reply', id: 'r2' },
       { name: 'finished', id: 'f2' },
+      { name: 'survivor' },
     ];
     for (const r of routes) expect(parseHash(hrefOf(r))).toEqual(r);
   });

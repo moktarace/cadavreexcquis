@@ -1,6 +1,7 @@
 import { DECOR_PLACES } from '../decor/art';
 import type { EditorSession } from '../session';
 import { ToyButton } from '../../ui';
+import { placeLabel } from './placeLabel';
 
 /** Commandes du décor en cours de placement: Gommer, Placer, Annuler. Le « Change ! » se fait en touchant le décor. */
 export function DecorConsole({ session, onPlace }: { session: EditorSession; onPlace: () => void }) {
@@ -17,7 +18,7 @@ export function DecorConsole({ session, onPlace }: { session: EditorSession; onP
       </p>
       <div className="decor-actions">
         <ToyButton variant="soft" icon="close" onClick={() => session.cancelDecor()}>Annuler</ToyButton>
-        <ToyButton className="decor-place" variant="success" icon="check" onClick={onPlace}>Placer</ToyButton>
+        <ToyButton className="decor-place" variant="success" icon="check" disabled={!session.canPlacePending} onClick={onPlace}>{placeLabel(session)}</ToyButton>
       </div>
     </div>
   );

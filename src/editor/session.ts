@@ -16,6 +16,7 @@ import { HEIGHT, PIXELS, WIDTH } from './palette';
 import { newProject, type Project } from './project';
 import { MIMO_DEFAULT, FX_DURATION, clampCenter, clampSize, drawMimo, mimoRect, type MimoAxis, type MimoState } from './mimo/mimo';
 import { TEXT_DEFAULT, TEXT_MAX, TEXT_MIN, clampTextCenter, drawText, limitText, textDims, textRect, textSizeOf, type TextState } from './text/text';
+import { TEXTURE_DENSITY, type InkRules } from './ink';
 import { DECOR_DEFAULT, DECOR_FX_MS, clampDecorCenter, clampDecorSize, drawDecor, nextPlace, pickElement, type DecorState } from './decor/decor';
 import { protect } from './shield';
 import { rasterMimo } from './mimo/raster';
@@ -70,6 +71,10 @@ export class EditorSession {
   decor: DecorState | null = null;
   /** Préférence système: pas d'animation des Mimo. */
   reducedMotion = false;
+  /** Règles de coût en encre (mode Survivor); null = jeu classique, tout est gratuit. */
+  ink: InkRules | null = null;
+  /** Encre disponible au début de cette case. */
+  inkBudget = 0;
   /** Nombre de tampons posés au plus sur une case (réglage, jamais une contrainte de dessin). */
   maxStamps: number = REWARD_CONFIG.maxStampsPerCase;
   /** Dernière taille choisie: le tampon suivant démarre avec elle. */
@@ -78,7 +83,7 @@ export class EditorSession {
   private history: Project[] = [];
   private future: Project[] = [];
   private listeners = new Set<() => void>();
-  private stroke: { pixels: Uint8Array; last: Point; changed: boolean; value: number; live: Project } | null = null;
+  private stroke: { pixels: Uint8Array; last: Point; changed: boolean; value: number; live: Project; spent: number; exhausted: boolean } | null = null;
   private selecting: { kind: 'rect' | 'lasso'; start: Point; points: Point[] } | null = null;
   private dragging: { start: Point; startDx: number; startDy: number } | null = null;
   private floatView: Project | null = null;
@@ -167,6 +172,7 @@ export class EditorSession {
   private commit(next: Project) {
     if (next.stamps === undefined) next = { ...next, stamps: this.project.stamps };
     if (next.shield === undefined) next = { ...next, shield: this.project.shield };
+    if (next.ink === undefined) next = { ...next, ink: this.project.ink };
     this.history.push(this.project);
     if (this.history.length > HISTORY_LIMIT) this.history.shift();
     this.future = [];
@@ -249,8 +255,21 @@ export class EditorSession {
     const p = { x, y, pressure };
     if (this.stroke) {
       const s = this.stroke;
-      if (strokeLine(s.pixels, s.last, p, this.currentBrush(), s.value)) s.changed = true;
-      s.last = p;
+      if (s.exhausted) return; // plus d'encre: le trait s'arrête là
+      let to = p;
+      if (this.ink && this.tool === 'pen') {
+        const cost = this.ink.stroke(Math.hypot(p.x - s.last.x, p.y - s.last.y), this.strokeSize(this.currentBrush()));
+        const left = this.inkLeft;
+        if (cost > left) {
+          // On ne dessine que ce que la réserve permet.
+          const f = cost > 0 ? Math.max(0, left) / cost : 0;
+          to = { x: s.last.x + (p.x - s.last.x) * f, y: s.last.y + (p.y - s.last.y) * f, pressure: p.pressure };
+          s.spent += Math.max(0, left);
+          s.exhausted = true;
+        } else s.spent += cost;
+      }
+      if (strokeLine(s.pixels, s.last, to, this.currentBrush(), s.value)) s.changed = true;
+      s.last = to;
       this.notify();
     } else if (this.selecting) {
       const sel = this.selecting;
@@ -274,8 +293,16 @@ export class EditorSession {
     if (this.stroke) {
       const s = this.stroke;
       this.stroke = null;
-      if (s.changed) this.commit({ pixels: s.pixels });
-      else this.notify();
+      if (s.changed) {
+        let delta = s.spent;
+        if (this.ink && this.tool === 'eraser') {
+          let erased = 0;
+          const before = this.project.pixels;
+          for (let i = 0; i < before.length; i++) if (before[i] !== 0 && s.pixels[i] === 0) erased++;
+          delta -= this.ink.refund(erased);
+        }
+        this.commit(this.ink ? { pixels: s.pixels, ink: this.chargeInk(this.project, delta) } : { pixels: s.pixels });
+      } else this.notify();
     } else if (this.selecting) {
       const sel = this.selecting;
       this.selecting = null;
@@ -306,14 +333,31 @@ export class EditorSession {
     const value = this.tool === 'eraser' ? 0 : this.color;
     const brush = this.currentBrush();
     const size = Math.max(1, Math.round(brush.size * (0.35 + 0.65 * p.pressure)));
+    let spent = 0;
+    if (this.ink && this.tool === 'pen') {
+      const cost = this.ink.stroke(1, this.strokeSize(brush));
+      if (cost > this.inkLeft) return; // plus d'encre: le crayon ne trace plus
+      spent = cost;
+    }
     const changed = stamp(pixels, Math.round(p.x), Math.round(p.y), { ...brush, size }, value);
-    this.stroke = { pixels, last: p, changed, value, live: { pixels } };
+    this.stroke = { pixels, last: p, changed, value, live: { pixels }, spent, exhausted: false };
     this.notify();
+  }
+
+  /** Épaisseur « payante » d'un trait: la taille du pinceau, allégée pour les textures qui noircissent moins. */
+  private strokeSize(brush: Brush) {
+    return brush.size * (TEXTURE_DENSITY[brush.texture] ?? 1);
   }
 
   private fillAt(p: Point) {
     const pixels = this.project.pixels.slice();
-    if (fill(pixels, Math.floor(p.x), Math.floor(p.y), this.color, this.fillTexture)) this.commit({ pixels });
+    if (!fill(pixels, Math.floor(p.x), Math.floor(p.y), this.color, this.fillTexture)) return;
+    if (!this.ink) return this.commit({ pixels });
+    let changed = 0;
+    for (let i = 0; i < pixels.length; i++) if (pixels[i] !== this.project.pixels[i]) changed++;
+    const cost = this.ink.fill(changed);
+    if (cost > this.inkLeft) return; // trop grand pour la réserve
+    this.commit({ pixels, ink: this.chargeInk(this.project, cost) });
   }
 
   // ───────────── Sélection, déplacement, presse-papiers ─────────────
@@ -332,7 +376,7 @@ export class EditorSession {
     const pixels = this.project.pixels.slice();
     clearMask(pixels, mask);
     const base = this.project;
-    this.project = { pixels, stamps: base.stamps, shield: base.shield };
+    this.project = { pixels, stamps: base.stamps, shield: base.shield, ink: base.ink };
     this.floating = { content, dx: 0, dy: 0, base };
     this.floatView = null;
     return true;
@@ -396,7 +440,7 @@ export class EditorSession {
     this.history.push(f.base);
     if (this.history.length > HISTORY_LIMIT) this.history.shift();
     this.future = [];
-    this.project = { pixels, stamps: (f.base.stamps ?? 0) + (f.stamp ? 1 : 0), shield: f.base.shield };
+    this.project = { pixels, stamps: (f.base.stamps ?? 0) + (f.stamp ? 1 : 0), shield: f.base.shield, ink: f.stamp ? this.chargeInk(f.base, this.ink?.stamp() ?? 0) : f.base.ink };
     this.selection = placed;
     this.afterProjectChange();
   }
@@ -469,7 +513,7 @@ export class EditorSession {
   /** Soulève un tampon au centre de la toile: il reste mobile jusqu'à « OK » ou « Annuler ». */
   beginStamp(id: string, scale: number = this.stampScale): boolean {
     const def = stickerById(id);
-    if (!def || this.mimo || this.text || this.decor) return false;
+    if (!def || this.mimo || this.text || this.decor || !this.canAfford('stamp')) return false;
     this.commitFloating();
     if (!this.canStamp) return false;
     const sprite = cropSprite(parseArt(def.art));
@@ -514,6 +558,47 @@ export class EditorSession {
     this.notify();
   }
 
+
+  // ───────────── Encre (mode Survivor) ─────────────
+
+  /** Encre restante, trait en cours compris; infinie dans le jeu classique. */
+  get inkLeft(): number {
+    if (!this.ink) return Infinity;
+    return this.inkBudget - (this.project.ink?.spent ?? 0) - (this.stroke?.spent ?? 0);
+  }
+
+  /** Version du compteur d'encre après une dépense (ou, si négatif, un remboursement): jamais sous zéro. */
+  private chargeInk(base: Project, delta: number, freeMimo = false) {
+    return { spent: Math.max(0, (base.ink?.spent ?? 0) + delta), freeMimos: (base.ink?.freeMimos ?? 0) + (freeMimo ? 1 : 0) };
+  }
+
+  /** Mimo offert (reste-t-il un Mimo gratuit sur cette case ?). */
+  get freeMimoLeft(): boolean {
+    return !!this.ink && (this.project.ink?.freeMimos ?? 0) < this.ink.freeMimos;
+  }
+
+  /** Coût en encre de poser cet objet maintenant. */
+  costOf(kind: 'mimo' | 'text' | 'decor' | 'stamp'): number {
+    if (!this.ink) return 0;
+    if (kind === 'mimo') return this.freeMimoLeft ? 0 : this.ink.mimo();
+    return this.ink[kind]();
+  }
+
+  canAfford(kind: 'mimo' | 'text' | 'decor' | 'stamp'): boolean {
+    return this.costOf(kind) <= this.inkLeft;
+  }
+
+  /** Coût de l'objet en cours de placement (0 s'il n'y en a pas): sert à la jauge. */
+  get pendingCost(): number {
+    if (this.mimo) return this.costOf('mimo');
+    if (this.text) return this.costOf('text');
+    if (this.decor) return this.costOf('decor');
+    return 0;
+  }
+
+  get canPlacePending(): boolean {
+    return this.pendingCost <= this.inkLeft;
+  }
 
   // ───────────── Mimo ─────────────
 
@@ -574,8 +659,11 @@ export class EditorSession {
     drawMimo(pixels, m, false);
     const r = mimoRect({ ...m, fx: null });
     const shield = protect(this.project.shield, rasterMimo(m.spec, r.w, r.h).mask, r.w, r.h, r.left, r.top, 2, true);
+    const cost = this.costOf('mimo');
+    if (cost > this.inkLeft) return false;
+    const free = this.freeMimoLeft;
     this.mimo = null;
-    this.commit({ pixels, shield });
+    this.commit(this.ink ? { pixels, shield, ink: this.chargeInk(this.project, cost, free) } : { pixels, shield });
     return true;
   }
 
@@ -640,8 +728,10 @@ export class EditorSession {
     const r = textRect(t);
     const halo = Math.max(2, Math.round(size * 0.2));
     const shield = protect(this.project.shield, rasterText(t.value, size).mask, r.w, r.h, r.left, r.top, halo, false);
+    const cost = this.costOf('text');
+    if (cost > this.inkLeft) return false;
     this.text = null;
-    this.commit({ pixels, shield });
+    this.commit(this.ink ? { pixels, shield, ink: this.chargeInk(this.project, cost) } : { pixels, shield });
     return true;
   }
 
@@ -738,8 +828,10 @@ export class EditorSession {
     if (!d) return false;
     const pixels = this.project.pixels.slice();
     drawDecor(pixels, this.project.shield, d, false);
+    const cost = this.costOf('decor');
+    if (cost > this.inkLeft) return false;
     this.decor = null;
-    this.commit({ pixels });
+    this.commit(this.ink ? { pixels, ink: this.chargeInk(this.project, cost) } : { pixels });
     return true;
   }
 

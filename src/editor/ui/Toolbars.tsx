@@ -50,6 +50,7 @@ export function ToolRow({ session, moreOpen, onMore, onMimo, onText }: { session
           variant="soft"
           size="s"
           icon="plus"
+          disabled={!session.canAfford('mimo')}
           aria-label="Ajouter un Mimo"
           title="Ajouter un Mimo"
           onClick={onMimo}
@@ -58,7 +59,7 @@ export function ToolRow({ session, moreOpen, onMore, onMimo, onText }: { session
         </ToyButton>
       )}
       {onText && (
-        <ToyButton className="tool-btn tool-btn--more tool-btn--mimo" variant="soft" size="s" icon="plus" aria-label="Ajouter du texte" title="Ajouter du texte" onClick={onText}>
+        <ToyButton className="tool-btn tool-btn--more tool-btn--mimo" variant="soft" size="s" icon="plus" disabled={!session.canAfford('text')} aria-label="Ajouter du texte" title="Ajouter du texte" onClick={onText}>
           Texte
         </ToyButton>
       )}
@@ -84,7 +85,7 @@ export function SecondaryTools({ session, onDecor }: { session: EditorSession; o
     <div className="ed-secondary" role="toolbar" aria-label="Autres outils">
       {TOOLS.filter((t) => !ESSENTIAL.includes(t.id)).map((t) => toolButton(session, t, 'tool-btn'))}
       {onDecor && (
-        <ToyButton className="tool-btn" variant="soft" size="s" icon="home" aria-label="Décor : un lieu tiré au hasard" title="Décor : un lieu tiré au hasard" onClick={onDecor}>
+        <ToyButton className="tool-btn" variant="soft" size="s" icon="home" disabled={!session.canAfford('decor')} aria-label="Décor : un lieu tiré au hasard" title="Décor : un lieu tiré au hasard" onClick={onDecor}>
           Décor
         </ToyButton>
       )}

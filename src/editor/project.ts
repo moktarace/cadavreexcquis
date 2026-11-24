@@ -1,3 +1,4 @@
+import type { InkState } from './ink';
 import { PIXELS } from './palette';
 
 /**
@@ -11,6 +12,8 @@ export interface Project {
   stamps?: number;
   /** Zones d'un Mimo ou d'un texte placés (1 = protégé): un décor ajouté ensuite passe derrière. Jamais affiché ni publié. */
   shield?: Uint8Array;
+  /** Encre dépensée (mode Survivor seulement); absent dans le jeu classique. */
+  ink?: InkState;
 }
 
 export function newProject(): Project {

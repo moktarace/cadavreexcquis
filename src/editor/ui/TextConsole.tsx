@@ -1,6 +1,7 @@
 import { TEXT_MAX_CHARS } from '../text/text';
 import type { EditorSession } from '../session';
 import { ToyButton } from '../../ui';
+import { placeLabel } from './placeLabel';
 
 /** Saisie du texte libre: un champ, « Annuler », « Placer ». Remplace la console de dessin tant que le texte n'est pas placé. */
 export function TextConsole({ session, inputRef, onPlace }: { session: EditorSession; inputRef: React.RefObject<HTMLTextAreaElement | null>; onPlace: () => void }) {
@@ -37,7 +38,7 @@ export function TextConsole({ session, inputRef, onPlace }: { session: EditorSes
       )}
       <div className="text-actions">
         <ToyButton variant="soft" icon="close" onClick={() => session.cancelText()}>Annuler</ToyButton>
-        <ToyButton className="text-place" variant="success" icon="check" disabled={!session.textReady} onClick={onPlace}>Placer</ToyButton>
+        <ToyButton className="text-place" variant="success" icon="check" disabled={!session.textReady || !session.canPlacePending} onClick={onPlace}>{placeLabel(session)}</ToyButton>
       </div>
       <p className="hint text-help">
         <span className="text-help--touch">Glisse le texte pour le déplacer, pince pour la taille.</span>
