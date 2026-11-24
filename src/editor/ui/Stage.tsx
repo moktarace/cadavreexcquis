@@ -2,7 +2,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { HEIGHT, WIDTH } from '../palette';
 import { indexedToRgba } from '../render';
 import type { EditorSession } from '../session';
-import { ObjectGesture, mimoPlaceable, textPlaceable } from '../mimo/gesture';
+import { ObjectGesture, decorPlaceable, mimoPlaceable, textPlaceable } from '../mimo/gesture';
+import { decorRect, visibleElements } from '../decor/decor';
 import { mimoRect } from '../mimo/mimo';
 import { textRect } from '../text/text';
 
@@ -48,6 +49,7 @@ export function Stage({ session, version, handleRef, onTextTap }: Props) {
   const spaceHeld = useRef(false);
   const mimoGesture = useRef<ObjectGesture | null>(null);
   const textGesture = useRef<ObjectGesture | null>(null);
+  const decorGesture = useRef<ObjectGesture | null>(null);
   const tapRef = useRef(onTextTap);
   // Le focus (donc le clavier) se prend dans l'événement « click »: sur iOS, c'est le seul endroit où il est accordé après un tap.
   const tapPending = useRef(false);
@@ -107,7 +109,29 @@ export function Stage({ session, version, handleRef, onTextTap }: Props) {
 
     const o = overlay.current!.getContext('2d')!;
     o.clearRect(0, 0, WIDTH, HEIGHT);
-    if (session.mimo) drawFrame(o, mimoRect({ ...session.mimo, fx: null }));
+    if (session.decor) {
+      const d = session.decor;
+      const rect = decorRect(d, false);
+      if (d.erasing) {
+        // Mode « Gommer »: chaque élément touchable est entouré de pointillés.
+        for (const e of visibleElements(d)) {
+          for (let x = Math.round(e.left); x <= Math.round(e.right); x++) {
+            for (const y of [Math.round(e.top), Math.round(e.bottom)]) {
+              if (x < 0 || y < 0 || x >= WIDTH || y >= HEIGHT) continue;
+              o.fillStyle = (x >> 1) % 2 ? '#fff' : '#141414';
+              o.fillRect(x, y, 1, 1);
+            }
+          }
+          for (let y = Math.round(e.top); y <= Math.round(e.bottom); y++) {
+            for (const x of [Math.round(e.left), Math.round(e.right)]) {
+              if (x < 0 || y < 0 || x >= WIDTH || y >= HEIGHT) continue;
+              o.fillStyle = (y >> 1) % 2 ? '#fff' : '#141414';
+              o.fillRect(x, y, 1, 1);
+            }
+          }
+        }
+      } else drawFrame(o, rect, { x: Math.min(rect.left + rect.w, WIDTH - 10), y: Math.min(rect.top + rect.h, HEIGHT - 10) });
+    } else if (session.mimo) drawFrame(o, mimoRect({ ...session.mimo, fx: null }));
     else if (session.text) {
       const r = textRect(session.text);
       if (r.w) drawFrame(o, r);
@@ -151,23 +175,26 @@ export function Stage({ session, version, handleRef, onTextTap }: Props) {
 
   /** Geste de l'objet en cours de placement (Mimo ou texte), créé à la demande. */
   const placing = (): ObjectGesture | null => {
+    if (session.decor) return (decorGesture.current ??= new ObjectGesture(decorPlaceable(session), (x, y) => toLogical(x, y)));
     if (session.text) return (textGesture.current ??= new ObjectGesture(textPlaceable(session, () => { tapPending.current = true; }), (x, y) => toLogical(x, y)));
     if (session.mimo) return (mimoGesture.current ??= new ObjectGesture(mimoPlaceable(session), (x, y) => toLogical(x, y)));
     return null;
   };
-  const gestureActive = () => !!(mimoGesture.current?.active || textGesture.current?.active);
+  const gestureActive = () => !!(mimoGesture.current?.active || textGesture.current?.active || decorGesture.current?.active);
   const resetGestures = () => {
     mimoGesture.current?.reset();
     textGesture.current?.reset();
+    decorGesture.current?.reset();
   };
 
   // Animation très courte d'un changement de pose, d'émotion ou de style.
-  const fxStart = session.mimo?.fx?.t0;
+  const fxStart = session.mimo?.fx?.t0 ?? session.decor?.fx?.t0;
   useEffect(() => {
     if (fxStart === undefined) return;
     let raf = 0;
     const step = () => {
-      if (session.mimoFrame()) raf = requestAnimationFrame(step);
+      const more = session.mimoFrame();
+      if (session.decorFrame() || more) raf = requestAnimationFrame(step);
     };
     raf = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf);
@@ -185,7 +212,7 @@ export function Stage({ session, version, handleRef, onTextTap }: Props) {
   }, []);
 
   const onDown = (e: React.PointerEvent) => {
-    if (session.mimo || session.text || gestureActive()) {
+    if (session.mimo || session.text || session.decor || gestureActive()) {
       // Un Mimo ou un texte en cours de placement: ces gestes ne dessinent jamais.
       // Pas d'événements souris « de compatibilité »: ils retireraient le focus (et le clavier) du champ de saisie.
       e.preventDefault();
@@ -232,6 +259,7 @@ export function Stage({ session, version, handleRef, onTextTap }: Props) {
     if (gestureActive()) {
       mimoGesture.current?.move(e.pointerId, e.clientX, e.clientY);
       textGesture.current?.move(e.pointerId, e.clientX, e.clientY);
+      decorGesture.current?.move(e.pointerId, e.clientX, e.clientY);
       return;
     }
     const known = pointers.current.get(e.pointerId);
@@ -268,6 +296,7 @@ export function Stage({ session, version, handleRef, onTextTap }: Props) {
     if (gestureActive()) {
       mimoGesture.current?.up(e.pointerId, e.timeStamp, e.type === 'pointercancel');
       textGesture.current?.up(e.pointerId, e.timeStamp, e.type === 'pointercancel');
+      decorGesture.current?.up(e.pointerId, e.timeStamp, e.type === 'pointercancel');
       return;
     }
     if (!pointers.current.has(e.pointerId)) return;
@@ -288,7 +317,7 @@ export function Stage({ session, version, handleRef, onTextTap }: Props) {
     const el = box.current!;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      const object = session.text ? textPlaceable(session, () => {}) : session.mimo ? mimoPlaceable(session) : null;
+      const object = session.decor ? decorPlaceable(session) : session.text ? textPlaceable(session, () => {}) : session.mimo ? mimoPlaceable(session) : null;
       if (object) object.resize(object.size() * Math.exp(-e.deltaY * 0.0025)); // molette: taille de l'objet en cours de placement
       else if (e.ctrlKey || e.metaKey) zoomAt(e.clientX, e.clientY, viewRef.current.zoom * Math.exp(-e.deltaY * 0.01));
       else setView((v) => clamp({ ...v, x: v.x - e.deltaX, y: v.y - e.deltaY }));
@@ -313,7 +342,7 @@ export function Stage({ session, version, handleRef, onTextTap }: Props) {
     };
   });
 
-  const cursor = session.mimo || session.text ? 'move' : session.tool === 'hand' ? 'grab' : 'crosshair';
+  const cursor = session.decor?.erasing ? 'pointer' : session.mimo || session.text || session.decor ? 'move' : session.tool === 'hand' ? 'grab' : 'crosshair';
 
   return (
     <div
@@ -350,7 +379,7 @@ export function Stage({ session, version, handleRef, onTextTap }: Props) {
 }
 
 /** Cadre de l'objet en cours de placement: coins et poignée de taille, noirs cerclés de blanc, visibles sur tout fond (jamais dans le dessin). */
-function drawFrame(o: CanvasRenderingContext2D, r: { left: number; top: number; w: number; h: number }) {
+function drawFrame(o: CanvasRenderingContext2D, r: { left: number; top: number; w: number; h: number }, handle?: { x: number; y: number }) {
   const len = Math.max(6, Math.min(14, Math.round(Math.min(r.w, r.h) / 4)));
   const right = r.left + r.w;
   const bottom = r.top + r.h;
@@ -368,11 +397,13 @@ function drawFrame(o: CanvasRenderingContext2D, r: { left: number; top: number; 
       o.fillRect(dx > 0 ? x - grow : x - t + grow, dy > 0 ? y - grow : y - len - grow, t, len + grow * 2);
     }
   }
-  // Poignée de taille au coin bas droit.
+  // Poignée de taille au coin bas droit (ramenée dans la toile pour un grand décor).
+  const hx = handle?.x ?? right;
+  const hy = handle?.y ?? bottom;
   o.fillStyle = '#fff';
-  o.fillRect(right - 4, bottom - 4, 9, 9);
+  o.fillRect(hx - 4, hy - 4, 9, 9);
   o.fillStyle = '#141414';
-  o.fillRect(right - 3, bottom - 3, 7, 7);
+  o.fillRect(hx - 3, hy - 3, 7, 7);
   o.fillStyle = '#fff';
-  o.fillRect(right - 1, bottom - 1, 3, 3);
+  o.fillRect(hx - 1, hy - 1, 3, 3);
 }

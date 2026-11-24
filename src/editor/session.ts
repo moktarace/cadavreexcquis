@@ -14,8 +14,12 @@ import {
 } from './raster';
 import { HEIGHT, PIXELS, WIDTH } from './palette';
 import { newProject, type Project } from './project';
-import { MIMO_DEFAULT, FX_DURATION, clampCenter, clampSize, drawMimo, type MimoAxis, type MimoState } from './mimo/mimo';
-import { TEXT_DEFAULT, TEXT_MAX, TEXT_MIN, clampTextCenter, drawText, limitText, textDims, textSizeOf, type TextState } from './text/text';
+import { MIMO_DEFAULT, FX_DURATION, clampCenter, clampSize, drawMimo, mimoRect, type MimoAxis, type MimoState } from './mimo/mimo';
+import { TEXT_DEFAULT, TEXT_MAX, TEXT_MIN, clampTextCenter, drawText, limitText, textDims, textRect, textSizeOf, type TextState } from './text/text';
+import { DECOR_DEFAULT, DECOR_FX_MS, clampDecorCenter, clampDecorSize, drawDecor, nextPlace, pickElement, type DecorState } from './decor/decor';
+import { protect } from './shield';
+import { rasterMimo } from './mimo/raster';
+import { rasterText } from './text/text';
 import { MIMO_DESIGNS, MIMO_EMOTIONS, MIMO_POSES } from './mimo/art';
 import { REWARD_CONFIG, TRANSPARENT, parseArt, scaleSprite, stickerById, type Sprite } from '../domain/stickers';
 
@@ -62,6 +66,8 @@ export class EditorSession {
   mimo: MimoState | null = null;
   /** Texte en cours de placement (modifiable jusqu'à « Placer » ou « Annuler »). */
   text: TextState | null = null;
+  /** Décor en cours de placement (jamais au-dessus du dessin existant). */
+  decor: DecorState | null = null;
   /** Préférence système: pas d'animation des Mimo. */
   reducedMotion = false;
   /** Nombre de tampons posés au plus sur une case (réglage, jamais une contrainte de dessin). */
@@ -78,6 +84,7 @@ export class EditorSession {
   private floatView: Project | null = null;
   private mimoView: Project | null = null;
   private textView: Project | null = null;
+  private decorView: Project | null = null;
 
   constructor(project: Project = newProject()) {
     this.project = project;
@@ -102,8 +109,15 @@ export class EditorSession {
     if (this.stroke) return this.stroke.live;
     if (this.mimo) return (this.mimoView ??= this.buildMimoView());
     if (this.text) return (this.textView ??= this.buildTextView());
+    if (this.decor) return (this.decorView ??= this.buildDecorView());
     if (this.floating) return (this.floatView ??= this.buildFloatView());
     return this.project;
+  }
+
+  private buildDecorView(): Project {
+    const pixels = this.project.pixels.slice();
+    drawDecor(pixels, this.project.shield, this.decor!, true);
+    return { pixels };
   }
 
   private buildTextView(): Project {
@@ -144,7 +158,7 @@ export class EditorSession {
   // ───────────── Historique ─────────────
 
   get canUndo() {
-    return this.mimo !== null || this.text !== null || this.floating !== null || this.history.length > 0;
+    return this.mimo !== null || this.text !== null || this.decor !== null || this.floating !== null || this.history.length > 0;
   }
   get canRedo() {
     return this.future.length > 0;
@@ -152,6 +166,7 @@ export class EditorSession {
 
   private commit(next: Project) {
     if (next.stamps === undefined) next = { ...next, stamps: this.project.stamps };
+    if (next.shield === undefined) next = { ...next, shield: this.project.shield };
     this.history.push(this.project);
     if (this.history.length > HISTORY_LIMIT) this.history.shift();
     this.future = [];
@@ -163,13 +178,15 @@ export class EditorSession {
     this.floatView = null;
     this.mimoView = null;
     this.textView = null;
+    this.decorView = null;
     this.notify();
   }
 
   undo() {
-    if (this.mimo || this.text) {
+    if (this.mimo || this.text || this.decor) {
       this.cancelMimo();
       this.cancelText();
+      this.cancelDecor();
       return;
     }
     if (this.stroke) return;
@@ -186,7 +203,7 @@ export class EditorSession {
   }
 
   redo() {
-    if (this.stroke || this.floating || this.mimo || this.text) return;
+    if (this.stroke || this.floating || this.mimo || this.text || this.decor) return;
     const next = this.future.pop();
     if (!next) return;
     this.history.push(this.project);
@@ -198,7 +215,7 @@ export class EditorSession {
   // ───────────── Entrées pointeur (coordonnées logiques 320×240, flottantes) ─────────────
 
   pointerDown(x: number, y: number, pressure = 1) {
-    if (this.mimo || this.text) return; // un objet en cours de placement ne laisse rien dessiner
+    if (this.mimo || this.text || this.decor) return; // un objet en cours de placement ne laisse rien dessiner
     const p = { x, y, pressure };
     switch (this.tool) {
       case 'pen':
@@ -315,7 +332,7 @@ export class EditorSession {
     const pixels = this.project.pixels.slice();
     clearMask(pixels, mask);
     const base = this.project;
-    this.project = { pixels, stamps: base.stamps };
+    this.project = { pixels, stamps: base.stamps, shield: base.shield };
     this.floating = { content, dx: 0, dy: 0, base };
     this.floatView = null;
     return true;
@@ -379,7 +396,7 @@ export class EditorSession {
     this.history.push(f.base);
     if (this.history.length > HISTORY_LIMIT) this.history.shift();
     this.future = [];
-    this.project = { pixels, stamps: (f.base.stamps ?? 0) + (f.stamp ? 1 : 0) };
+    this.project = { pixels, stamps: (f.base.stamps ?? 0) + (f.stamp ? 1 : 0), shield: f.base.shield };
     this.selection = placed;
     this.afterProjectChange();
   }
@@ -452,7 +469,7 @@ export class EditorSession {
   /** Soulève un tampon au centre de la toile: il reste mobile jusqu'à « OK » ou « Annuler ». */
   beginStamp(id: string, scale: number = this.stampScale): boolean {
     const def = stickerById(id);
-    if (!def || this.mimo || this.text) return false;
+    if (!def || this.mimo || this.text || this.decor) return false;
     this.commitFloating();
     if (!this.canStamp) return false;
     const sprite = cropSprite(parseArt(def.art));
@@ -502,7 +519,7 @@ export class EditorSession {
 
   /** Pose un Mimo au centre de la toile: il reste modifiable jusqu'à « Placer » ou « Annuler ». */
   beginMimo(): boolean {
-    if (this.mimo || this.text) return false;
+    if (this.mimo || this.text || this.decor) return false;
     this.commitFloating();
     this.selection = null;
     this.mimo = { spec: { design: 0, emotion: 0, pose: 0 }, cx: WIDTH / 2, cy: HEIGHT / 2, size: MIMO_DEFAULT, fx: null };
@@ -555,8 +572,10 @@ export class EditorSession {
     if (!m) return false;
     const pixels = this.project.pixels.slice();
     drawMimo(pixels, m, false);
+    const r = mimoRect({ ...m, fx: null });
+    const shield = protect(this.project.shield, rasterMimo(m.spec, r.w, r.h).mask, r.w, r.h, r.left, r.top, 2, true);
     this.mimo = null;
-    this.commit({ pixels });
+    this.commit({ pixels, shield });
     return true;
   }
 
@@ -571,7 +590,7 @@ export class EditorSession {
 
   /** Ouvre un texte vide au centre de la toile: il apparaît en noir dès qu'on écrit, et reste mobile jusqu'à « Placer ». */
   beginText(): boolean {
-    if (this.mimo || this.text) return false;
+    if (this.mimo || this.text || this.decor) return false;
     this.commitFloating();
     this.selection = null;
     this.text = { value: '', cx: WIDTH / 2, cy: HEIGHT / 2, size: TEXT_DEFAULT };
@@ -617,8 +636,12 @@ export class EditorSession {
     if (!t || !this.textReady) return false;
     const pixels = this.project.pixels.slice();
     drawText(pixels, t);
+    const size = textSizeOf(t);
+    const r = textRect(t);
+    const halo = Math.max(2, Math.round(size * 0.2));
+    const shield = protect(this.project.shield, rasterText(t.value, size).mask, r.w, r.h, r.left, r.top, halo, false);
     this.text = null;
-    this.commit({ pixels });
+    this.commit({ pixels, shield });
     return true;
   }
 
@@ -629,10 +652,108 @@ export class EditorSession {
     this.notify();
   }
 
+  // ───────────── Décor ─────────────
+
+  /** Générateur de hasard du « Change ! » (remplaçable dans les tests). */
+  random: () => number = Math.random;
+
+  /** Pose un lieu tiré au hasard, derrière le dessin: déplaçable, redimensionnable, éléments retirables jusqu'à « Placer ». */
+  beginDecor(): boolean {
+    if (this.mimo || this.text || this.decor) return false;
+    this.commitFloating();
+    this.selection = null;
+    this.decor = { place: nextPlace(null, this.random), cx: WIDTH / 2, cy: HEIGHT / 2, width: DECOR_DEFAULT, removed: [], erasing: false, fx: null };
+    this.decorView = null;
+    this.notify();
+    return true;
+  }
+
+  /** « Change ! »: un autre lieu au hasard (jamais le même), mêmes position et taille, éléments retirés remis. */
+  decorChange(now: number = clock()) {
+    const d = this.decor;
+    if (!d) return;
+    d.place = nextPlace(d.place, this.random);
+    d.removed = [];
+    d.fx = this.reducedMotion ? null : { t0: now, t: 0 };
+    this.decorView = null;
+    this.notify();
+  }
+
+  decorMoveTo(x: number, y: number) {
+    const d = this.decor;
+    if (!d || d.erasing) return;
+    Object.assign(d, clampDecorCenter(x, y));
+    this.decorView = null;
+    this.notify();
+  }
+
+  decorResize(width: number) {
+    const d = this.decor;
+    if (!d || d.erasing) return;
+    d.width = clampDecorSize(width);
+    this.decorView = null;
+    this.notify();
+  }
+
+  decorSetErasing(on: boolean) {
+    if (!this.decor) return;
+    this.decor.erasing = on;
+    this.notify();
+  }
+
+  /** Mode « Gommer »: retire d'un toucher l'élément entier le plus proche; rien si le toucher tombe dans le vide. */
+  decorRemoveAt(x: number, y: number): boolean {
+    const d = this.decor;
+    if (!d) return false;
+    const id = pickElement(d, x, y);
+    if (!id) return false;
+    d.removed = [...d.removed, id];
+    this.decorView = null;
+    this.notify();
+    return true;
+  }
+
+  /** Remet le dernier élément retiré. */
+  decorRestore() {
+    const d = this.decor;
+    if (!d || !d.removed.length) return;
+    d.removed = d.removed.slice(0, -1);
+    this.decorView = null;
+    this.notify();
+  }
+
+  decorFrame(now: number = clock()): boolean {
+    const fx = this.decor?.fx;
+    if (!fx) return false;
+    fx.t = Math.min(1, (now - fx.t0) / DECOR_FX_MS);
+    if (fx.t >= 1) this.decor!.fx = null;
+    this.decorView = null;
+    this.notify();
+    return this.decor!.fx !== null;
+  }
+
+  /** Fusionne le décor derrière le dessin (une entrée d'historique): aucun pixel déjà dessiné n'est modifié. */
+  placeDecor(): boolean {
+    const d = this.decor;
+    if (!d) return false;
+    const pixels = this.project.pixels.slice();
+    drawDecor(pixels, this.project.shield, d, false);
+    this.decor = null;
+    this.commit({ pixels });
+    return true;
+  }
+
+  cancelDecor() {
+    if (!this.decor) return;
+    this.decor = null;
+    this.decorView = null;
+    this.notify();
+  }
+
   // ───────────── Réglages d'outils ─────────────
 
   setTool(tool: Tool) {
-    if (this.mimo || this.text) return;
+    if (this.mimo || this.text || this.decor) return;
     if (tool !== 'move') this.commitFloating();
     this.tool = tool;
     this.notify();

@@ -1,4 +1,6 @@
+import { decorRect, type DecorState } from '../decor/decor';
 import { textRect, textSizeOf, type TextState } from '../text/text';
+import { HEIGHT, WIDTH } from '../palette';
 import { mimoRect, type MimoState } from './mimo';
 
 /** Un objet en cours de placement (Mimo ou texte): ce que les gestes ont besoin de lui demander. */
@@ -9,8 +11,38 @@ export interface Placeable {
   size(): number;
   moveTo(x: number, y: number): void;
   resize(size: number): void;
-  /** Appui bref sur l'objet (Mimo: pose suivante; texte: rouvrir la saisie). */
-  tap(): void;
+  /** Appui bref sur l'objet (Mimo: pose suivante; texte: rouvrir la saisie; décor en mode Gommer: retire un élément). `at` = point touché, en pixels de la toile. */
+  tap(at: { x: number; y: number }): void;
+  /** Poignée de taille (par défaut le coin bas droit); null si l'objet ne se redimensionne pas pour l'instant. */
+  handle?(): { x: number; y: number } | null;
+}
+
+export function decorPlaceable(s: {
+  decor: DecorState | null;
+  decorMoveTo(x: number, y: number): void;
+  decorResize(width: number): void;
+  decorRemoveAt(x: number, y: number): boolean;
+  decorChange(): void;
+}): Placeable {
+  return {
+    rect: () => (s.decor ? decorRect(s.decor, false) : null),
+    center: () => ({ x: s.decor?.cx ?? 0, y: s.decor?.cy ?? 0 }),
+    size: () => s.decor?.width ?? 1,
+    moveTo: (x, y) => s.decorMoveTo(x, y),
+    resize: (w) => s.decorResize(w),
+    // Comme la pose d'un Mimo: un tap change de lieu (« Change ! »); en mode Gommer, il retire l'élément touché.
+    tap: (at) => {
+      if (!s.decor) return;
+      if (s.decor.erasing) s.decorRemoveAt(at.x, at.y);
+      else s.decorChange();
+    },
+    // Un grand décor déborde de la toile: la poignée reste toujours atteignable, dans la toile.
+    handle: () => {
+      if (!s.decor || s.decor.erasing) return null;
+      const r = decorRect(s.decor, false);
+      return { x: Math.min(r.left + r.w, WIDTH - 10), y: Math.min(r.top + r.h, HEIGHT - 10) };
+    },
+  };
 }
 
 export function mimoPlaceable(s: { mimo: MimoState | null; mimoStep(axis: 'pose'): void; mimoMoveTo(x: number, y: number): void; mimoResize(size: number): void }): Placeable {
@@ -96,7 +128,9 @@ export class ObjectGesture {
 
   private onHandle(x: number, y: number): boolean {
     const r = this.target.rect();
-    return !!r && Math.hypot(x - (r.left + r.w), y - (r.top + r.h)) <= HANDLE_REACH;
+    if (!r) return false;
+    const h = this.target.handle ? this.target.handle() : { x: r.left + r.w, y: r.top + r.h };
+    return !!h && Math.hypot(x - h.x, y - h.y) <= HANDLE_REACH;
   }
 
   private pair(): [Pointer, Pointer] | null {
@@ -160,7 +194,7 @@ export class ObjectGesture {
     if (!this.pointers.has(id)) return;
     this.pointers.delete(id);
     if ((this.mode === 'press' || this.mode === 'handle') && this.press?.id === id) {
-      if (!cancelled && now - this.press.t0 <= TAP_MAX_MS) this.target.tap();
+      if (!cancelled && now - this.press.t0 <= TAP_MAX_MS) this.target.tap(this.toCanvas(this.press.x, this.press.y));
       this.press = null;
     }
     if (this.mode === 'pinch' && this.pointers.size < 2) this.mode = 'ignore';

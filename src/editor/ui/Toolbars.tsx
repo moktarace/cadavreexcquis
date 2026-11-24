@@ -79,10 +79,15 @@ export function ToolRow({ session, moreOpen, onMore, onMimo, onText }: { session
 }
 
 /** Outils supplémentaires: pot, sélections, déplacement, main. */
-export function SecondaryTools({ session }: { session: EditorSession }) {
+export function SecondaryTools({ session, onDecor }: { session: EditorSession; onDecor?: () => void }) {
   return (
     <div className="ed-secondary" role="toolbar" aria-label="Autres outils">
       {TOOLS.filter((t) => !ESSENTIAL.includes(t.id)).map((t) => toolButton(session, t, 'tool-btn'))}
+      {onDecor && (
+        <ToyButton className="tool-btn" variant="soft" size="s" icon="home" aria-label="Décor : un lieu tiré au hasard" title="Décor : un lieu tiré au hasard" onClick={onDecor}>
+          Décor
+        </ToyButton>
+      )}
     </div>
   );
 }

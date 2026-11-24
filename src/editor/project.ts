@@ -9,6 +9,8 @@ export interface Project {
   pixels: Uint8Array;
   /** Tampons déjà posés sur cette version du dessin (suit annuler/rétablir). */
   stamps?: number;
+  /** Zones d'un Mimo ou d'un texte placés (1 = protégé): un décor ajouté ensuite passe derrière. Jamais affiché ni publié. */
+  shield?: Uint8Array;
 }
 
 export function newProject(): Project {

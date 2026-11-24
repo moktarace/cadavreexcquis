@@ -5,6 +5,7 @@ import { go } from '../../app/router';
 import { ToyButton, ToyDialog } from '../../ui';
 import { EditorSession, closesDrawerOnDraw } from '../session';
 import { Brief, useBrief } from './Brief';
+import { DecorConsole } from './DecorConsole';
 import { MimoConsole, MimoHint } from './MimoConsole';
 import { ContextPanel, PublishSheet } from './PublishSheet';
 import { SettingsPanel } from './Panels';
@@ -93,6 +94,17 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
     };
   }, [typing]);
 
+  const addDecor = () => {
+    setMoreOpen(false);
+    session.beginDecor();
+  };
+
+  const placeDecor = () => {
+    if (!session.placeDecor()) return;
+    setPopped(true);
+    window.setTimeout(() => setPopped(false), 320);
+  };
+
   const placeMimo = () => {
     if (!session.placeMimo()) return;
     setMimoHint(false);
@@ -146,10 +158,11 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
       } else if (mod && e.key.toLowerCase() === 'x') {
         session.cut();
       } else if (!mod && e.key === 'Enter') {
-        if (!session.placeMimo() && !session.placeText()) session.commitFloating();
+        if (!session.placeMimo() && !session.placeText() && !session.placeDecor()) session.commitFloating();
       } else if (!mod && e.key === 'Escape') {
         if (session.mimo) session.cancelMimo();
         else if (session.text) session.cancelText();
+        else if (session.decor) session.cancelDecor();
         else session.cancelFloating();
       } else if (!mod && e.key === 'Delete') {
         session.deleteSelection();
@@ -175,7 +188,7 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
         <span className="spacer" />
         <ToyButton variant="soft" size="s" iconOnly icon="undo" onClick={() => session.undo()} disabled={!session.canUndo} aria-label="Annuler" title="Annuler" />
         <ToyButton variant="soft" size="s" iconOnly icon="redo" onClick={() => session.redo()} disabled={!session.canRedo} aria-label="Rétablir" title="Rétablir" />
-        <ToyButton variant="primary" size="s" icon="share" onClick={() => { session.placeMimo(); if (!session.placeText()) session.cancelText(); session.flush(); setPublishOpen(true); }}>Publier ma case</ToyButton>
+        <ToyButton variant="primary" size="s" icon="share" onClick={() => { session.placeMimo(); if (!session.placeText()) session.cancelText(); session.placeDecor(); session.flush(); setPublishOpen(true); }}>Publier ma case</ToyButton>
       </header>
 
       <div className="ed-brief-row">
@@ -195,7 +208,7 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
           </div>
         )}
         {mimoHint && session.mimo && <MimoHint />}
-        <div className="ed-zoom" role="group" aria-label="Zoom" hidden={!!session.mimo || !!session.text}>
+        <div className="ed-zoom" role="group" aria-label="Zoom" hidden={!!session.mimo || !!session.text || !!session.decor}>
           <ToyButton variant="soft" size="s" iconOnly icon="plus" onClick={() => stage.current?.zoomBy(1.25)} aria-label="Zoom avant" />
           <ToyButton variant="soft" size="s" iconOnly icon="minus" onClick={() => stage.current?.zoomBy(0.8)} aria-label="Zoom arrière" />
           <ToyButton variant="soft" size="s" iconOnly onClick={() => stage.current?.fit()} aria-label="Ajuster la vue">1:1</ToyButton>
@@ -207,11 +220,13 @@ export function EditorScreen({ parentId }: { parentId: string | null }) {
           <MimoConsole session={session} onPlace={placeMimo} />
         ) : session.text ? (
           <TextConsole session={session} inputRef={textInput} onPlace={placeText} />
+        ) : session.decor ? (
+          <DecorConsole session={session} onPlace={placeDecor} />
         ) : (
           <>
             {moreOpen && (
               <div className="ed-more" id="ed-more">
-                <SecondaryTools session={session} />
+                <SecondaryTools session={session} onDecor={addDecor} />
                 <OptionsRow session={session} onStampPicked={() => setMoreOpen(false)} />
                 <SettingsPanel session={session} />
               </div>

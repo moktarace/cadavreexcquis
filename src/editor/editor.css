@@ -186,3 +186,11 @@ body.editing { overflow: hidden; position: fixed; inset: 0; width: 100%; overscr
 .text-help--mouse { display: none; }
 @media (hover: hover) and (pointer: fine) { .text-help--touch { display: none; } .text-help--mouse { display: inline; } }
 @media (orientation: landscape) and (min-width: 560px) { .text-input { min-height: 88px; } }
+
+/* ───────────── Décor ───────────── */
+.decor-console { display: grid; gap: 8px; padding-bottom: 2px; }
+.decor-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+.decor-row .toy-btn, .decor-actions .toy-btn { min-height: 52px; touch-action: manipulation; }
+.decor-row .toy-btn--icon { width: 52px; }
+.decor-name { margin: 0; }
+.decor-actions { display: grid; grid-template-columns: 1fr 1.3fr; gap: 8px; }
