@@ -9,6 +9,7 @@ import { MODE_BLURBS, MODE_LABELS, formatRemaining, type GameResult, type GameVi
 import { BonusPill } from '../shop/ShopOffer';
 import { fetchThumbs } from './api';
 import type { Live } from './live';
+import { BUILD_COMMIT, BUILD_TIME, shortCommit } from '../version';
 import { markSeen } from './prefs';
 import { activityLines, describeEvent, matchState, type EventTarget, type PlayTarget } from './types';
 
@@ -32,8 +33,8 @@ const ACTIVITIES: { id: Activite; name: string; icon: IconName; blurb: string }[
 const errorLine = (live: Live) =>
   live.error ? (
     <ToyCard tone="pink" role="alert">
-      <p className="plain-text"><strong>Serveur inaccessible.</strong> {live.error}</p>
-      <p className="hint">Le Solo reste jouable hors connexion. Les parties en ligne t’attendent: réessaie quand le réseau revient.</p>
+      <p className="plain-text"><strong>{live.games || live.hub || live.activity ? 'Actualisation incomplète.' : 'Serveur inaccessible.'}</strong> {live.error}</p>
+      <p className="hint">Le Solo reste jouable hors connexion. Ce qui était déjà affiché est conservé; réessaie quand le réseau revient.</p>
       <ToyButton variant="soft" size="s" icon="rotate" onClick={() => void live.refresh(true)}>Réessayer</ToyButton>
     </ToyCard>
   ) : null;
@@ -339,10 +340,10 @@ export function PlayChooser({ open, onClose, onPick, live }: { open: boolean; on
 // ───────────── Tutoriel et aides ─────────────
 
 const STEPS = [
-  { title: 'Tu crées une BD', text: 'Avant chaque case, l’éditeur propose trois demandes: choisis celle que tu glisses dans l’histoire. Dans l’éditeur, Mimo et Texte sont dans la barre du bas, et Décor dans « Outils ».' },
-  { title: 'Dessiner coûte de l’encre', text: 'Chaque trait, Mimo, texte ou décor consomme de l’encre. La jauge descend en direct: à court d’encre, la BD s’arrête.' },
-  { title: 'Terminer une case en rend', text: 'Une demande difficile rapporte plus d’encre qu’une facile. Toutes les deux cases, une amélioration à choisir.' },
-  { title: 'Seul ou à plusieurs', text: 'Solo sur ton appareil, Relay à plusieurs avec une réserve commune, Duel et Battle contre un autre joueur.' },
+  { title: 'Tu crées une BD', text: 'Chaque BD a un thème. Avant chaque case, choisis une demande parmi trois, puis dessine. La barre d’outils réunit Stylo, Gomme, Mimo (personnages) et Texte; Décor est dans « Outils ».' },
+  { title: 'Dessiner coûte de l’encre', text: 'Chaque trait, Mimo, texte ou décor consomme de l’encre (la jauge). À court d’encre, une case assez remplie peut encore être terminée pour en récupérer; trop vide et sans secours, la BD s’arrête.' },
+  { title: 'Terminer une case en rend', text: 'Plus la demande est difficile, plus elle rapporte d’encre. De temps en temps, une amélioration s’ajoute à ta partie.' },
+  { title: 'Seul ou à plusieurs', text: 'Solo sur ton appareil; Relay à plusieurs avec une réserve commune; Duel et Battle contre un autre joueur. Tes parties en ligne sont dans « Mes parties ».' },
   { title: 'Les arbitres te font gagner de l’encre bonus', text: 'Juge si la contrainte est respectée (jamais le talent): tu gagnes de l’encre bonus, à dépenser en Solo et en Relay.' },
 ];
 
@@ -372,6 +373,7 @@ export function TutorialDialog({ open, onClose }: { open: boolean; onClose: () =
       }
     >
       <p className="plain-text">{step.text}</p>
+      <p className="sv-version" title={`${BUILD_COMMIT}${BUILD_TIME ? ` · ${BUILD_TIME}` : ''}`}>Version {shortCommit()}</p>
     </ToyDialog>
   );
 }

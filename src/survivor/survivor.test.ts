@@ -7,6 +7,7 @@ import { SurvivorGame, type RunStateV1 } from './game';
 import { inkRulesFor } from './rules';
 import { clearRun, decodeCase, encodeCase, loadRun, saveRun } from './storage';
 import { UPGRADES, modifiersOf, offerUpgrades } from './upgrades';
+import { samePixels } from '../testing/pixels';
 
 /** Générateur déterministe pour les tests. */
 function seeded(seed = 1) {
@@ -71,7 +72,7 @@ describe('consommation d’encre', () => {
     expect(s.project.pixels[100 * WIDTH + 290]).toBe(0); // le trait n'est pas allé au bout
     const before = s.project.pixels.slice();
     line(s, [10, 20], [200, 20]);
-    expect(s.project.pixels).toEqual(before);
+    samePixels(s.project.pixels, before);
     expect(s.inkLeft).toBeCloseTo(0, 6);
   });
 

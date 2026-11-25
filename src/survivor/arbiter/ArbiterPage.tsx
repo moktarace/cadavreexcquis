@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { PageFrame } from '../../pages/shared';
 import { PixelIcon, ToyButton, ToyCard } from '../../ui';
 import { constraintById, diceOf } from '../constraints';
-import { useImages } from '../multi/MultiPlay';
+import { CaseImage, IMAGE_HINTS, voteEnabled, useSignedImages, type ImgStatus } from '../multi/images';
 import { BonusPill } from '../shop/ShopOffer';
 import { abandonArbitration, answerConsent, arbitrateNext, castVote, currentArbitration, finishArbitration, flagArbitration, fetchHub, fetchWallet, submitGameBd } from './api';
 import { BD_STATUS_LABELS, NARRATIVE_LABELS, SOURCE_LABELS, historyLabel, signed, type ArbResult, type Arbitration, type FlagCategory, type Hub, type Vote, type Wallet } from './types';
@@ -199,7 +199,11 @@ function Judging({ arb, onChange, onDone, onLeave }: { arb: Arbitration; onChang
   const [flagging, setFlagging] = useState(false);
   const bd = arb.bds[slot];
   const c = bd.cases[at];
-  const urls = useImages(arb.bds.flatMap((b) => b.cases));
+  const images = useSignedImages(arb.bds.flatMap((b) => b.cases).map((k) => k.image_path));
+  const [status, setStatus] = useState<Record<string, ImgStatus>>({});
+  const reportStatus = useCallback((path: string, s: ImgStatus) => setStatus((m) => (m[path] === s ? m : { ...m, [path]: s })), []);
+  const imgStatus = status[c.image_path] ?? 'loading';
+  const canVote = voteEnabled(imgStatus);
   const asked = constraintById(c.constraint_id);
 
   const guard = async (action: () => Promise<void>) => {
@@ -216,6 +220,7 @@ function Judging({ arb, onChange, onDone, onLeave }: { arb: Arbitration; onChang
   // Un second appui sur le même pouce retire le vote; on passe ensuite à la case suivante.
   const vote = (v: Vote) =>
     guard(async () => {
+      if (!canVote) return;
       onChange(await castVote(arb.id, c.id, c.vote === v ? null : v));
       if (c.vote !== v && at < bd.cases.length - 1) setAt(at + 1);
     });
@@ -241,12 +246,13 @@ function Judging({ arb, onChange, onDone, onLeave }: { arb: Arbitration; onChang
         </div>
       )}
       <ToyCard tone="plain">
-        {urls[c.image_path] ? <img className="sv-arb__img" src={urls[c.image_path]} alt={`Case ${c.position}`} /> : <div className="sv-arb__img sv-thumb--empty" role="img" aria-label="Chargement du dessin" />}
+        <CaseImage key={c.image_path} path={c.image_path} images={images} alt={`Case ${c.position}`} className="sv-arb__img" onStatus={reportStatus} />
         <p className="sv-arb__ask"><span className="sv-dice" aria-hidden="true">{diceOf(c.constraint_id)}</span> {asked?.text ?? c.constraint_id}</p>
         <p className="hint">Case {c.position}{arb.duel ? ` de la BD ${bd.label}` : ''} · la contrainte est-elle respectée ?</p>
+        {!canVote && <p className="hint" role="status">{IMAGE_HINTS[imgStatus]}</p>}
         <div className="sv-arb__votes">
-          <ToyButton variant={c.vote === 'up' ? 'success' : 'soft'} icon="thumbUp" disabled={busy} onClick={() => void vote('up')} aria-pressed={c.vote === 'up'} aria-label="Upvote: contrainte respectée">Respectée</ToyButton>
-          <ToyButton variant={c.vote === 'down' ? 'danger' : 'soft'} icon="thumbDown" disabled={busy} onClick={() => void vote('down')} aria-pressed={c.vote === 'down'} aria-label="Downvote: contrainte non respectée">Pas respectée</ToyButton>
+          <ToyButton variant={c.vote === 'up' ? 'success' : 'soft'} icon="thumbUp" disabled={busy || !canVote} onClick={() => void vote('up')} aria-pressed={c.vote === 'up'} aria-label="Upvote: contrainte respectée">Respectée</ToyButton>
+          <ToyButton variant={c.vote === 'down' ? 'danger' : 'soft'} icon="thumbDown" disabled={busy || !canVote} onClick={() => void vote('down')} aria-pressed={c.vote === 'down'} aria-label="Downvote: contrainte non respectée">Pas respectée</ToyButton>
         </div>
         <div className="row-buttons">
           <ToyButton variant="ghost" size="s" icon="back" disabled={at === 0} onClick={() => setAt(at - 1)}>Précédente</ToyButton>

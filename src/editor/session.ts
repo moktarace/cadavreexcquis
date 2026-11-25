@@ -109,6 +109,11 @@ export class EditorSession {
     for (const fn of this.listeners) fn();
   }
 
+  /** Un trait est en cours (le pointeur est posé). */
+  get stroking(): boolean {
+    return this.stroke !== null;
+  }
+
   /** Projet à afficher: trait en cours et sélection flottante inclus. */
   current(): Project {
     if (this.stroke) return this.stroke.live;

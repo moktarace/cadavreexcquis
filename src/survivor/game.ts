@@ -44,6 +44,8 @@ export interface RunState {
   offer: string[];
   outcome: 'victory' | 'defeat' | null;
   totalSpent: number;
+  /** Encre consommée sur la case perdue (comprise dans `totalSpent`); absent des anciennes sauvegardes. */
+  lostSpent?: number;
   /** Identifiant stable de la partie Solo (limites d'achat côté serveur); ajouté aux anciennes sauvegardes au chargement. */
   gameId?: string;
   shop?: ShopState;
@@ -76,9 +78,41 @@ export interface CaseGain {
 const themes = (themeBank as { themes: { text: string }[] }).themes.map((t) => t.text);
 export const nonWhite = (pixels: Uint8Array) => pixels.reduce((n, v) => n + (v ? 1 : 0), 0);
 
+/**
+ * Où en est le joueur quand l'encre manque:
+ * - `validable`: plus d'encre pour tracer, mais la case est assez remplie: la terminer rapporte encore de l'encre;
+ * - `rescue`: case trop vide, mais un secours gratuit existe (Mimo gratuit, Dernier souffle);
+ * - `lost`: case trop vide et aucun secours: défaite.
+ */
+export type InkOut = 'ok' | 'validable' | 'rescue' | 'lost';
+export interface InkOutInput {
+  inkLeft: number;
+  freeMimoLeft: boolean;
+  emergency: number;
+  terminable: boolean;
+}
+export function inkOutState(o: InkOutInput): InkOut {
+  if (o.inkLeft >= SURVIVOR.ink.minPlayable) return 'ok';
+  if (o.terminable) return 'validable';
+  return o.freeMimoLeft || o.emergency > 0 ? 'rescue' : 'lost';
+}
+
+/** Pixels réellement dessinés, trait en cours compris: une case validable ne doit pas être perdue parce que le trait n'est pas encore relâché. */
+export const drawnPixels = (s: { stroking: boolean; current(): { pixels: Uint8Array }; project: { pixels: Uint8Array } }): Uint8Array => (s.stroking ? s.current().pixels : s.project.pixels);
+
 /** Panne d'encre: plus de quoi tracer, aucun Mimo gratuit, aucun secours, et une case encore trop vide pour être terminée. */
-export const stuckNow = (o: { inkLeft: number; freeMimoLeft: boolean; emergency: number; terminable: boolean }) =>
-  o.inkLeft < SURVIVOR.ink.minPlayable && !o.freeMimoLeft && o.emergency <= 0 && !o.terminable;
+export const stuckNow = (o: InkOutInput) => inkOutState(o) === 'lost';
+
+/** Message de l'éditeur selon la situation (A: case validable, B: secours disponible, C: perdu). */
+export function inkOutMessage(state: InkOut, o: { freeMimoLeft: boolean; emergency: number }): string | null {
+  if (state === 'validable') return 'Plus d’encre ! Tu peux encore terminer cette case pour en récupérer.';
+  if (state === 'rescue') {
+    const aids = [o.freeMimoLeft ? 'un Mimo gratuit' : null, o.emergency > 0 ? `ton Dernier souffle (+${SURVIVOR.upgrades.dernierSouffle})` : null].filter(Boolean);
+    return `Plus d’encre pour tracer. Il te reste ${aids.join(' et ')}.`;
+  }
+  if (state === 'lost') return 'Plus d’encre et case trop vide pour être terminée: la BD s’arrête ici.';
+  return null;
+}
 
 /** Une partie de Survivor: logique pure, sans interface; l'éditeur ne lui prête que ses pixels et l'encre dépensée. */
 export class SurvivorGame {
@@ -314,8 +348,14 @@ export class SurvivorGame {
     return s.phase === 'drawing' && stuckNow({ inkLeft, freeMimoLeft, emergency: s.emergency, terminable: this.isTerminable(pixels) });
   }
 
-  lose() {
-    this.state.phase = 'finished';
-    this.state.outcome = 'defeat';
+  /** `spent`: encre réellement consommée sur la case perdue (déjà nette des actions annulées); elle compte dans le bilan. */
+  lose(spent = 0) {
+    const s = this.state;
+    if (s.phase === 'finished') return;
+    const lost = Math.max(0, spent);
+    s.totalSpent += lost;
+    s.lostSpent = lost;
+    s.phase = 'finished';
+    s.outcome = 'defeat';
   }
 }

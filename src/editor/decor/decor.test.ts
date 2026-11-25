@@ -5,6 +5,7 @@ import { EditorSession } from '../session';
 import { protect } from '../shield';
 import { DECOR_COUNT, DECOR_H, DECOR_PLACES, DECOR_W } from './art';
 import { DECOR_DEFAULT, DECOR_MAX, DECOR_MIN, PICK_REACH, decorRect, nextPlace, pickElement, rasterDecor, visibleElements, type DecorState } from './decor';
+import { samePixels } from '../../testing/pixels';
 
 const ink = (m: Uint8Array) => m.reduce((a, b) => a + b, 0);
 const black = (s: EditorSession) => s.project.pixels.reduce((n, v) => n + (v === 1 ? 1 : 0), 0);
@@ -123,7 +124,7 @@ describe('« Change ! »', () => {
     const before = sceneOf(s);
     s.beginDecor();
     for (let i = 0; i < 5; i++) s.decorChange();
-    expect(s.project.pixels).toEqual(before);
+    samePixels(s.project.pixels, before);
   });
 });
 
@@ -198,7 +199,7 @@ describe('placement du décor', () => {
     expect(s.project.pixels.some(Boolean)).toBe(false);
     expect(s.placeDecor()).toBe(true);
     expect(s.decor).toBeNull();
-    expect(s.project.pixels).toEqual(preview);
+    samePixels(s.project.pixels, preview);
   });
 
   it('passe derrière: ne modifie jamais un pixel déjà dessiné, quelle que soit sa couleur', () => {
@@ -233,9 +234,9 @@ describe('placement du décor', () => {
     const b = sceneOf(s);
     expect(b).not.toEqual(a);
     s.undo();
-    expect(s.project.pixels).toEqual(a);
+    samePixels(s.project.pixels, a);
     s.redo();
-    expect(s.project.pixels).toEqual(b);
+    samePixels(s.project.pixels, b);
   });
 
   it('« Annuler » abandonne le décor sans rien changer, et le bouton annuler de l’éditeur aussi', () => {
@@ -246,11 +247,11 @@ describe('placement du décor', () => {
     s.decorChange();
     s.cancelDecor();
     expect(s.decor).toBeNull();
-    expect(s.project.pixels).toEqual(a);
+    samePixels(s.project.pixels, a);
     s.beginDecor();
     s.undo();
     expect(s.decor).toBeNull();
-    expect(s.project.pixels).toEqual(a);
+    samePixels(s.project.pixels, a);
   });
 
   it('ajoute autant de décors que l’on veut, un à la fois', () => {
@@ -268,11 +269,11 @@ describe('placement du décor', () => {
     }
     for (let i = states.length - 2; i >= 0; i--) {
       s.undo();
-      expect(s.project.pixels).toEqual(states[i]);
+      samePixels(s.project.pixels, states[i]);
     }
     for (let i = 1; i < states.length; i++) {
       s.redo();
-      expect(s.project.pixels).toEqual(states[i]);
+      samePixels(s.project.pixels, states[i]);
     }
   });
 
@@ -286,7 +287,7 @@ describe('placement du décor', () => {
     expect(s.tool).toBe('pen');
     expect(s.beginMimo()).toBe(false);
     expect(s.beginText()).toBe(false);
-    expect(s.current().pixels).toEqual(before);
+    samePixels(s.current().pixels, before);
     s.cancelDecor();
     s.beginMimo();
     expect(s.beginDecor()).toBe(false);
@@ -387,7 +388,7 @@ describe('cohabitation avec les Mimo et le texte', () => {
     snap();
     for (let i = log.length - 2; i >= 0; i--) {
       s.undo();
-      expect(s.project.pixels).toEqual(log[i]);
+      samePixels(s.project.pixels, log[i]);
     }
     expect(s.canUndo).toBe(false);
   });

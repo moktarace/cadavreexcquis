@@ -1,12 +1,26 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+import { execSync } from 'node:child_process';
 
 // Sous-chemin de déploiement (ex. « /mon-depot/ » sur GitHub Pages); « / » par défaut.
 const base = process.env.VITE_BASE ?? '/';
 
+// SHA réellement compilé (GitHub Actions, sinon git local): affiché dans l'aide de Survivor pour vérifier ce qui est déployé.
+function commit(): string {
+  if (process.env.GITHUB_SHA) return process.env.GITHUB_SHA;
+  try {
+    const sha = execSync('git rev-parse HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    const dirty = execSync('git status --porcelain', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim() !== '';
+    return dirty ? `${sha}+local` : sha;
+  } catch {
+    return 'inconnu';
+  }
+}
+
 export default defineConfig({
   base,
+  define: { __BUILD_COMMIT__: JSON.stringify(commit()), __BUILD_TIME__: JSON.stringify(new Date().toISOString()) },
   plugins: [
     react(),
     // injectManifest: le service worker est écrit à la main (src/sw.ts) pour accueillir Web Push en phase D.

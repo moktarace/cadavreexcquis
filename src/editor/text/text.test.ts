@@ -4,6 +4,7 @@ import { ObjectGesture, HANDLE_REACH, TAP_SLOP, mimoPlaceable, textPlaceable } f
 import { EditorSession } from '../session';
 import { glyphOf, hasGlyph, toFontText } from './font';
 import { TEXT_DEFAULT, TEXT_MAX, TEXT_MAX_CHARS, TEXT_MIN, drawText, fitSize, limitText, rasterText, textRect, wrapText } from './text';
+import { samePixels } from '../../testing/pixels';
 
 const ink = (m: Uint8Array) => m.reduce((a, b) => a + b, 0);
 const placed = (s: EditorSession) => s.project.pixels.reduce((n, v) => n + (v === 1 ? 1 : 0), 0);
@@ -136,7 +137,7 @@ describe('placement du texte dans l’éditeur', () => {
     const preview = s.current().pixels.slice();
     s.placeText();
     expect(s.text).toBeNull();
-    expect(s.project.pixels).toEqual(preview);
+    samePixels(s.project.pixels, preview);
     const values = new Set(s.project.pixels);
     expect([...values].sort()).toEqual([0, 1]); // fond blanc intact, texte noir, aucune autre couleur
     const r = rasterText('QUOI ?!', TEXT_DEFAULT);
@@ -192,12 +193,12 @@ describe('placement du texte dans l’éditeur', () => {
     s.textSet('RATÉ');
     s.cancelText();
     expect(s.text).toBeNull();
-    expect(s.project.pixels).toEqual(before);
+    samePixels(s.project.pixels, before);
     s.beginText();
     s.textSet('RATÉ');
     s.undo(); // « annuler » abandonne le texte en cours
     expect(s.text).toBeNull();
-    expect(s.project.pixels).toEqual(before);
+    samePixels(s.project.pixels, before);
   });
 
   it('s’annule et se rétablit comme un trait, et l’on peut en placer sans limite', () => {
@@ -209,11 +210,11 @@ describe('placement du texte dans l’éditeur', () => {
     }
     for (let i = states.length - 2; i >= 0; i--) {
       s.undo();
-      expect(s.project.pixels).toEqual(states[i]);
+      samePixels(s.project.pixels, states[i]);
     }
     for (let i = 1; i < states.length; i++) {
       s.redo();
-      expect(s.project.pixels).toEqual(states[i]);
+      samePixels(s.project.pixels, states[i]);
     }
     expect(s.beginText()).toBe(true);
   });
@@ -243,7 +244,7 @@ describe('placement du texte dans l’éditeur', () => {
     expect(s.project.pixels[5 * WIDTH + 150]).toBe(3);
     for (let i = log.length - 2; i >= 0; i--) {
       s.undo();
-      expect(s.project.pixels).toEqual(log[i]);
+      samePixels(s.project.pixels, log[i]);
     }
     expect(s.beginMimo()).toBe(true);
   });
@@ -260,7 +261,7 @@ describe('placement du texte dans l’éditeur', () => {
     expect(s.tool).toBe('pen');
     expect(s.beginMimo()).toBe(false);
     expect(s.beginText()).toBe(false);
-    expect(s.current().pixels).toEqual(before);
+    samePixels(s.current().pixels, before);
     s.cancelText();
     s.beginMimo();
     expect(s.beginText()).toBe(false);

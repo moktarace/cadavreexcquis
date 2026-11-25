@@ -91,6 +91,13 @@ export function MimoConsole({ session, onPlace }: { session: EditorSession; onPl
         <SwipeZone label="Humeur" value={EMOTION_NAMES[m.spec.emotion]} index={m.spec.emotion} count={MIMO_EMOTIONS} onStep={(d) => session.mimoStep('emotion', d)} />
         <SwipeZone label="Style" value={DESIGN_NAMES[m.spec.design]} index={m.spec.design} count={MIMO_DESIGNS} vertical onStep={(d) => session.mimoStep('design', d)} />
       </div>
+      {session.ink && (
+      <ol className="mimo-steps" aria-label="Étapes pour placer un Mimo">
+        <li><b>1</b> Choisis la pose et l’humeur</li>
+        <li><b>2</b> Glisse-le sur la case</li>
+        <li><b>3</b> Confirme avec « Placer »</li>
+      </ol>
+      )}
       <div className="mimo-actions">
         <ToyButton variant="soft" icon="close" onClick={() => session.cancelMimo()}>Annuler</ToyButton>
         <ToyButton className="mimo-help" variant="ghost" size="s" iconOnly aria-label="Aide" aria-expanded={help} onClick={() => setHelp(!help)}>?</ToyButton>

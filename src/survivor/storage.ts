@@ -34,45 +34,89 @@ interface Saved {
 
 const PIXELS = 320 * 240;
 
-/** Garde la partie (cases terminées, progression, demandes proposées et choisie), jamais le dessin en cours.
- Faux si le stockage refuse. */
-export function saveRun(game: SurvivorGame): boolean {
+export type SaveFailure = 'quota' | 'unavailable' | 'error';
+export type SaveResult = { ok: true } | { ok: false; reason: SaveFailure };
+
+const isQuota = (e: unknown) => e instanceof DOMException && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22 || e.code === 1014);
+
+/**
+ * Garde la partie (cases terminées, progression, demandes proposées et choisie, achats en cours), jamais le dessin en cours.
+ * `setItem` est atomique: en cas d'échec, la dernière sauvegarde valide reste telle quelle. Une écriture n'est confirmée
+ * qu'une fois relue à l'identique (certains navigateurs acceptent sans conserver).
+ */
+export function persistRun(game: SurvivorGame): SaveResult {
+  let text: string;
   try {
     const saved: Saved = { state: game.state, cases: game.cases.map(encodeCase) };
-    localStorage.setItem(KEY, JSON.stringify(saved));
-    return true;
+    text = JSON.stringify(saved);
   } catch {
-    return false;
+    return { ok: false, reason: 'error' };
+  }
+  try {
+    localStorage.setItem(KEY, text);
+    return localStorage.getItem(KEY) === text ? { ok: true } : { ok: false, reason: 'error' };
+  } catch (e) {
+    return { ok: false, reason: isQuota(e) ? 'quota' : 'unavailable' };
   }
 }
 
-/** Dernière partie enregistrée; une partie de l'ancien format est migrée (cases conservées) puis réécrite. */
-export function loadRun(rng?: () => number): SurvivorGame | null {
+export const saveRun = (game: SurvivorGame): boolean => persistRun(game).ok;
+
+export const SAVE_MESSAGES: Record<SaveFailure, string> = {
+  quota: 'Espace de stockage plein sur cet appareil: ta progression n’est pas enregistrée.',
+  unavailable: 'Stockage bloqué (navigation privée ou réglages du navigateur): ta progression n’est pas enregistrée.',
+  error: 'L’enregistrement a échoué: ta progression n’est pas enregistrée.',
+};
+
+/** Nouvelle partie: l'ancienne (non terminée) n'est remplacée que si la nouvelle est écrite durablement; sinon elle reste intacte. */
+export function beginRun(previous: SurvivorGame | null, rng?: () => number): { started: true; game: SurvivorGame; save: SaveResult } | { started: false; reason: SaveFailure } {
+  const game = SurvivorGame.start(rng);
+  const save = persistRun(game);
+  if (!save.ok && previous && previous.state.phase !== 'finished') return { started: false, reason: save.reason };
+  return { started: true, game, save };
+}
+
+export type RunRead = { kind: 'none' } | { kind: 'ok'; game: SurvivorGame } | { kind: 'unreadable'; reason: 'unavailable' | 'corrupt' };
+
+/** Distingue « aucune sauvegarde » d'une sauvegarde illisible: celle-ci ne doit jamais être prise pour une absence puis écrasée en silence. */
+export function readRun(rng?: () => number): RunRead {
+  let raw: string | null;
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return null;
+    raw = localStorage.getItem(KEY);
+  } catch {
+    return { kind: 'unreadable', reason: 'unavailable' };
+  }
+  if (!raw) return { kind: 'none' };
+  try {
     const saved = JSON.parse(raw) as Saved;
     const old = saved.state.version === 1;
     const game = old ? SurvivorGame.fromV1(saved.state as RunStateV1, rng) : new SurvivorGame(saved.state as RunState, rng);
-    if (!old && saved.state.version !== 2) return null;
+    if (!old && saved.state.version !== 2) return { kind: 'unreadable', reason: 'corrupt' };
     const s = game.state;
-    if (s.phase === 'choosing' && !s.proposals.every(constraintById)) return null;
+    if (s.phase === 'choosing' && !s.proposals.every(constraintById)) return { kind: 'unreadable', reason: 'corrupt' };
     // Anciennes sauvegardes: identifiant de partie et état des achats ajoutés sans rien perdre.
     const upgraded = !s.gameId || !s.shop;
     void game.gameId;
     void game.shop;
     game.cases = saved.cases.map((c) => decodeCase(c, PIXELS));
     if (old || upgraded) saveRun(game);
-    return game;
+    return { kind: 'ok', game };
   } catch {
-    return null;
+    return { kind: 'unreadable', reason: 'corrupt' };
   }
 }
 
-export function clearRun() {
+/** Dernière partie enregistrée; une partie de l'ancien format est migrée (cases conservées) puis réécrite. */
+export function loadRun(rng?: () => number): SurvivorGame | null {
+  const r = readRun(rng);
+  return r.kind === 'ok' ? r.game : null;
+}
+
+export function clearRun(): boolean {
   try {
     localStorage.removeItem(KEY);
+    return true;
   } catch {
-    // rien à effacer
+    return false;
   }
 }

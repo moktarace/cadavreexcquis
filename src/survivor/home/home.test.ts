@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Hub } from '../arbiter/types';
 import type { GameView } from '../multi/types';
 import { fetchActivity, fetchThumbs, markActivityRead } from './api';
+import { mergeLive, type LiveData } from './live';
 import { forget, markSeen, seen } from './prefs';
 import { activityLines, describeEvent, matchState, suggestPlay, turnsByMode, type Activity, type ActivityEvent } from './types';
 
@@ -198,5 +199,35 @@ describe('migration 0017', () => {
   it('n’expose jamais l’identité d’un arbitre', () => {
     const feed = sql.slice(sql.indexOf('function public.survivor_activity()'), sql.indexOf('function public.survivor_activity_read'));
     expect(feed).not.toMatch(/arbiter_id\s*[,)]\s*(as|from)|a\.arbiter_id,|'arbiter'\s*,\s*a\.arbiter/);
+  });
+});
+
+describe('rafraîchissement: une requête en échec ne fait pas perdre les autres', () => {
+  const ok = <T,>(value: T): PromiseFulfilledResult<T> => ({ status: 'fulfilled', value });
+  const ko = (m: string): PromiseRejectedResult => ({ status: 'rejected', reason: new Error(m) });
+  const hubV = { balance: 5 } as Hub;
+  const act = { now: 'n', read_until: 'r', unread: 2, events: [], open: { relay: 1, duel: 0, battle: 0 } } as Activity;
+  const empty: LiveData = { games: null, hub: null, activity: null, rules: null };
+
+  it('conserve les données valides et les anciennes valeurs de ce qui échoue', () => {
+    const first = mergeLive(empty, { games: ok([game()]), hub: ok(hubV), activity: ko('activité indisponible'), rules: ok(null) });
+    expect(first.next.games).toHaveLength(1);
+    expect(first.next.hub).toBe(hubV);
+    expect(first.next.activity).toBeNull();
+    expect(first.error).toBe('activité indisponible');
+    expect(first.allOk).toBe(false);
+    // Deuxième passage: les parties échouent, mais celles déjà affichées restent, et l'activité arrive.
+    const second = mergeLive(first.next, { games: ko('réseau'), hub: ok(hubV), activity: ok(act), rules: ok(null) });
+    expect(second.next.games).toHaveLength(1);
+    expect(second.next.activity).toBe(act);
+    expect(second.error).toBe('réseau');
+  });
+
+  it('tout réussi: aucune erreur; les règles déjà connues ne sont pas écrasées par une absence', () => {
+    const rules = { total_cases: 16 } as never;
+    const a = mergeLive(empty, { games: ok([]), hub: ok(hubV), activity: ok(act), rules: ok(rules) });
+    expect(a).toMatchObject({ error: null, allOk: true });
+    const b = mergeLive(a.next, { games: ok([]), hub: ok(hubV), activity: ok(act), rules: ok(null) });
+    expect(b.next.rules).toBe(rules);
   });
 });

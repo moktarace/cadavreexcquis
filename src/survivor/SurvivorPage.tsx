@@ -1,5 +1,4 @@
 import { useEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
-import { ApiError } from '../backend/api';
 import { hrefOf } from '../app/router';
 import { HEIGHT, WIDTH } from '../editor/palette';
 import { indexedToRgba } from '../editor/render';
@@ -10,16 +9,17 @@ import { ToyButton, ToyCard, ToyDialog } from '../ui';
 import { SURVIVOR } from './config';
 import { LEVELS, LEVEL_LABELS, constraintById, diceOf } from './constraints';
 import { exportSurvivorPng } from './exportSheet';
-import { SurvivorGame, type CaseGain, type ShopItem } from './game';
-import { clearRun, loadRun, saveRun } from './storage';
+import { SurvivorGame, drawnPixels, inkOutMessage, inkOutState, type CaseGain, type ShopItem } from './game';
+import { SAVE_MESSAGES, beginRun, persistRun, readRun, type SaveFailure } from './storage';
 import { ArbiterPage } from './arbiter/ArbiterPage';
 import { newSoloUpload, submitSolo } from './arbiter/api';
 import { InviteView, MultiLab } from './multi/MultiLab';
 import { MultiPlay } from './multi/MultiPlay';
 import { matchmake, reserveSlot } from './multi/api';
 import type { GameResult, GameView, MultiMode } from './multi/types';
-import { InkGauge, UpgradeChoice } from './parts';
+import { CaseBrief, InkGauge, ThemeLine, UpgradeChoice } from './parts';
 import { buyItem, checkPurchase, type ShopInfo } from './shop/api';
+import { soloPurchase } from './shop/solo';
 import { BonusPill, ShopOffer, useShop } from './shop/ShopOffer';
 import { ContextHint } from './home/parts';
 import { useLive } from './home/live';
@@ -47,7 +47,12 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : 'Erreur inco
 export default function SurvivorPage({ invite = null }: { invite?: string | null }) {
   const [game, setGame] = useState<SurvivorGame | null>(null);
   const [screen, setScreen] = useState<Screen>(invite ? { k: 'invite' } : { k: 'tab', tab: 'home' });
-  const [saved, setSaved] = useState(() => loadRun());
+  const [initial] = useState(() => readRun());
+  const [saved, setSaved] = useState<SurvivorGame | null>(initial.kind === 'ok' ? initial.game : null);
+  // Sauvegarde présente mais illisible: jamais prise pour une absence, jamais écrasée sans confirmation.
+  const [unreadable, setUnreadable] = useState<'unavailable' | 'corrupt' | null>(initial.kind === 'unreadable' ? initial.reason : null);
+  const [saveFail, setSaveFail] = useState<SaveFailure | null>(null);
+  const [startError, setStartError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [, bump] = useReducer((n: number) => n + 1, 0);
   const shopInfo = useShop('solo', game?.gameId, { needSession: true });
@@ -73,21 +78,41 @@ export default function SurvivorPage({ invite = null }: { invite?: string | null
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hub, screen.k === 'tab' ? screen.tab : '', !!game]);
 
+  // Seule une écriture relue à l'identique compte comme enregistrée; sinon la partie continue en mémoire, avec un avertissement.
+  const persist = (g: SurvivorGame): boolean => {
+    const r = persistRun(g);
+    setSaveFail(r.ok ? null : r.reason);
+    return r.ok;
+  };
   const changed = (g: SurvivorGame) => {
-    saveRun(g);
+    persist(g);
     bump();
   };
+  const retrySave = () => {
+    if (game && persist(game)) setToast('Partie enregistrée');
+  };
+  // L'ancienne partie n'est remplacée qu'une fois la nouvelle écrite durablement (l'écriture est atomique: l'ancienne survit à un échec).
   const start = () => {
-    clearRun();
-    const g = SurvivorGame.start();
-    saveRun(g);
-    setSaved(g);
-    setGame(g);
+    const r = beginRun(saved);
+    if (!r.started) {
+      setStartError(`Nouvelle partie impossible: ${SAVE_MESSAGES[r.reason]} Ta partie en cours est conservée.`);
+      return;
+    }
+    setStartError(null);
+    setSaveFail(r.save.ok ? null : r.save.reason);
+    setUnreadable(null);
+    setSaved(r.game);
+    setGame(r.game);
   };
   const home = () => setScreen({ k: 'tab', tab: 'home' });
-  // Le menu relit la dernière sauvegarde: la reprise ne propose jamais une version périmée.
+  // Le menu relit la dernière sauvegarde (jamais une version périmée), sauf si l'écriture a échoué: la mémoire est alors plus récente.
   const toMenu = () => {
-    setSaved(loadRun());
+    if (game && saveFail) setSaved(game);
+    else {
+      const r = readRun();
+      setSaved(r.kind === 'ok' ? r.game : null);
+      setUnreadable(r.kind === 'unreadable' ? r.reason : null);
+    }
     setGame(null);
     home();
   };
@@ -118,22 +143,15 @@ export default function SurvivorPage({ invite = null }: { invite?: string | null
   }, [game, pendingId]);
 
   const soloShop = (g: SurvivorGame): SoloShop => {
-    const buy = (item: ShopItem) => async (id: string) => {
-      g.beginPurchase(id, item);
-      saveRun(g);
-      try {
-        const r = await buyItem('solo', g.gameId, item, id);
-        g.applyPurchase({ purchase: r.purchase, item, effect: r.effect });
-        changed(g);
-      } catch (e) {
-        // Refus définitif: rien n'a été débité. Erreur réseau ou serveur: l'achat reste « en cours » pour être récupéré.
-        if (e instanceof ApiError && e.code !== 'SERVER') {
-          g.clearPending();
-          saveRun(g);
-        }
-        throw e;
-      }
-    };
+    const buy = (item: ShopItem) => (id: string) =>
+      soloPurchase(g, item, id, {
+        persist: (x) => {
+          const ok = persist(x);
+          bump();
+          return ok;
+        },
+        buy: (it, pid) => buyItem('solo', g.gameId, it, pid),
+      });
     return {
       info: shopInfo.info,
       reload: () => void shopInfo.reload(),
@@ -217,7 +235,7 @@ export default function SurvivorPage({ invite = null }: { invite?: string | null
     else if (game.state.phase === 'upgrade') view = <UpgradeView game={game} shop={soloShop(game)} onPick={(id) => game.chooseUpgrade(id) && changed(game)} />;
     else if (game.state.phase === 'choosing') {
       view = <ChooseView game={game} shop={soloShop(game)} onPick={(id) => game.choose(id) && changed(game)} onJoker={() => game.rerollProposals() && changed(game)} onMenu={toMenu} />;
-    } else view = <Play key={game.state.caseNo} game={game} shop={soloShop(game)} onChange={() => changed(game)} onFinished={(gain) => finished(game, gain)} onQuit={toMenu} />;
+    } else view = <Play key={game.state.caseNo} game={game} shop={soloShop(game)} saveFail={saveFail} onRetrySave={retrySave} onChange={() => changed(game)} onFinished={(gain) => finished(game, gain)} onQuit={toMenu} />;
   } else if (screen.k === 'invite' && invite) {
     view = (
       <InviteView
@@ -248,7 +266,7 @@ export default function SurvivorPage({ invite = null }: { invite?: string | null
     view = <MultiLab mode={screen.mode} onBack={home} onOpen={openGame} onChanged={() => void live.refresh(true)} />;
   } else if (screen.k === 'solo') {
     dock = 'home';
-    view = <SoloMenu saved={saved} onNew={start} onResume={resumeSolo} onBack={home} />;
+    view = <SoloMenu saved={saved} unreadable={unreadable} onNew={start} onResume={resumeSolo} onBack={home} />;
   } else if (screen.k === 'wallet') {
     dock = 'home';
     view = <WalletView live={live} onBack={home} onArbiter={() => setScreen({ k: 'arbiter' })} />;
@@ -265,9 +283,17 @@ export default function SurvivorPage({ invite = null }: { invite?: string | null
     );
   }
 
+  const playing = !!game && game.state.phase === 'drawing';
   return (
     <>
       {view}
+      {(startError || (saveFail && !playing)) && (
+        <div className="sv-savebar" role="alert">
+          <span>{startError ?? (saveFail ? `${SAVE_MESSAGES[saveFail]} Elle sera perdue si tu fermes l’application.` : '')}</span>
+          {saveFail && !startError && <ToyButton variant="soft" size="s" icon="rotate" onClick={retrySave}>Réessayer</ToyButton>}
+          {startError && <ToyButton variant="soft" size="s" onClick={() => setStartError(null)}>OK</ToyButton>}
+        </div>
+      )}
       {dock !== false && <SurvivorDock tab={dock} onTab={(t) => setScreen({ k: 'tab', tab: t })} onPlay={() => play(target)} unread={live.activity?.unread ?? 0} turns={turns} />}
       <TutorialDialog open={tutorial} onClose={() => setTutorial(false)} />
       <PlayChooser open={chooser} onClose={() => setChooser(false)} onPick={pickActivity} live={live} />
@@ -305,9 +331,9 @@ interface SoloShop {
 
 // ───────────── Solo ─────────────
 
-function SoloMenu({ saved, onNew, onResume, onBack }: { saved: SurvivorGame | null; onNew: () => void; onResume: () => void; onBack: () => void }) {
+function SoloMenu({ saved, unreadable, onNew, onResume, onBack }: { saved: SurvivorGame | null; unreadable: 'unavailable' | 'corrupt' | null; onNew: () => void; onResume: () => void; onBack: () => void }) {
   const [replace, setReplace] = useState(false);
-  const inProgress = !!saved && saved.state.phase !== 'finished';
+  const inProgress = (!!saved && saved.state.phase !== 'finished') || !!unreadable;
   return (
     <div className="app-shell">
       <main>
@@ -315,9 +341,7 @@ function SoloMenu({ saved, onNew, onResume, onBack }: { saved: SurvivorGame | nu
           <ToyCard tone="yellow">
             <p className="plain-text"><strong>{SURVIVOR.totalCases} cases à dessiner avant la panne d’encre.</strong></p>
             <ul className="sv-rules">
-              <li>Un thème tiré au hasard. Avant chaque case, l’éditeur propose trois demandes : choisis celle que tu glisses dans ton histoire.</li>
-              <li>Une seule réserve d’encre pour toute la partie : traits, Mimo, textes et décors la font fondre.</li>
-              <li>Terminer la case rapporte de l’encre selon la demande : +{SURVIVOR.rewards.easy} (facile), +{SURVIVOR.rewards.medium} (intermédiaire), +{SURVIVOR.rewards.hard} (difficile).</li>
+              <li>Récompense d’une case : +{SURVIVOR.rewards.easy} (facile), +{SURVIVOR.rewards.medium} (intermédiaire), +{SURVIVOR.rewards.hard} (difficile).</li>
               <li>Toutes les {SURVIVOR.upgradeEvery} cases, une amélioration à choisir parmi {SURVIVOR.offerSize}.</li>
             </ul>
             <div className="row-buttons">
@@ -328,6 +352,11 @@ function SoloMenu({ saved, onNew, onResume, onBack }: { saved: SurvivorGame | nu
                 </ToyButton>
               )}
             </div>
+            {unreadable && (
+              <p className="sv-notice sv-notice--error" role="alert">
+                {unreadable === 'unavailable' ? 'Le stockage de cet appareil est bloqué: une éventuelle partie enregistrée ne peut pas être relue.' : 'Une sauvegarde existe mais n’a pas pu être relue (données endommagées).'} Elle est conservée tant que tu ne lances pas une nouvelle partie.
+              </p>
+            )}
             <p className="hint">Tout reste sur cet appareil. Le dessin de la case en cours n’est pas sauvegardé : seules les cases terminées le sont.</p>
           </ToyCard>
         </PageFrame>
@@ -343,7 +372,7 @@ function SoloMenu({ saved, onNew, onResume, onBack }: { saved: SurvivorGame | nu
           </>
         }
       >
-        <p className="plain-text">Ta partie Solo (case {saved?.state.caseNo}) sera perdue: il n’y a qu’une sauvegarde Solo par appareil.</p>
+        <p className="plain-text">{saved && saved.state.phase !== 'finished' ? `Ta partie Solo (case ${saved.state.caseNo}) sera perdue` : 'La sauvegarde illisible sera remplacée'}: il n’y a qu’une sauvegarde Solo par appareil.</p>
       </ToyDialog>
     </div>
   );
@@ -361,7 +390,7 @@ function PixelThumb({ pixels, label }: { pixels: Uint8Array; label: string }) {
 
 // ───────────── Une case ─────────────
 
-function Play({ game, shop, onChange, onFinished, onQuit }: { game: SurvivorGame; shop: SoloShop; onChange: () => void; onFinished: (gain: CaseGain) => void; onQuit: () => void }) {
+function Play({ game, shop, saveFail, onRetrySave, onChange, onFinished, onQuit }: { game: SurvivorGame; shop: SoloShop; saveFail: SaveFailure | null; onRetrySave: () => void; onChange: () => void; onFinished: (gain: CaseGain) => void; onQuit: () => void }) {
   const [session] = useState(() => {
     const s = new EditorSession();
     s.ink = game.rules;
@@ -373,11 +402,14 @@ function Play({ game, shop, onChange, onFinished, onQuit }: { game: SurvivorGame
   const [notice, setNotice] = useState<string | null>(null);
   const s = game.state;
   const asked = game.constraint;
+  const out = inkOutState({ inkLeft: session.inkLeft, freeMimoLeft: session.freeMimoLeft, emergency: s.emergency, terminable: session.inkLeft < SURVIVOR.ink.minPlayable && game.isTerminable(drawnPixels(session)) });
+  const outMessage = inkOutMessage(out, { freeMimoLeft: session.freeMimoLeft, emergency: s.emergency });
 
   // Défaite: plus d'encre, plus d'action gratuite ni de secours, et une case encore trop vide pour être terminée.
   useEffect(() => {
-    if (game.isStuck(session.inkLeft, session.freeMimoLeft, session.project.pixels)) {
-      game.lose();
+    if (game.isStuck(session.inkLeft, session.freeMimoLeft, drawnPixels(session))) {
+      // Consommation nette de la case (trait en cours compris, actions annulées remboursées): budget moins ce qui reste.
+      game.lose(session.inkBudget - Math.max(0, session.inkLeft));
       onChange();
     }
   });
@@ -410,16 +442,7 @@ function Play({ game, shop, onChange, onFinished, onQuit }: { game: SurvivorGame
       )}
       brief={
         <div className="sv-brief">
-          <div className="sv-brief__top">
-            <strong>Case {s.caseNo}/{SURVIVOR.totalCases}</strong>
-            <span>{game.phaseLabel} · {s.theme}</span>
-          </div>
-          {asked && (
-            <div className="sv-ask">
-              <p className="sv-constraint"><span className="sv-dice" aria-label={`Dés ${asked.id}`}>{diceOf(asked.id)}</span> {asked.text}</p>
-              <span className="sv-reward" title="Encre gagnée en terminant la case">+{game.rewardOf(asked.id)}</span>
-            </div>
-          )}
+          <CaseBrief theme={s.theme} phase={game.phaseLabel} caseNo={s.caseNo} total={SURVIVOR.totalCases} asked={asked} reward={asked ? game.rewardOf(asked.id) : 0} />
           <InkGauge left={session.inkLeft} capacity={game.capacity} pending={session.pendingCost} label="Ton encre" />
           <div className="sv-brief__tools">
             <ToyButton variant="soft" size="s" icon="eye" onClick={() => setReviewOpen(true)} disabled={game.cases.length === 0}>Cases</ToyButton>
@@ -427,9 +450,14 @@ function Play({ game, shop, onChange, onFinished, onQuit }: { game: SurvivorGame
               <ToyButton variant="danger" size="s" icon="alert" onClick={emergency}>Dernier souffle +{SURVIVOR.upgrades.dernierSouffle}</ToyButton>
             )}
             {session.inkLeft < 10 && shop.info?.allowed && game.canUse('emergency_refill') && shop.offer('emergency_refill', () => { session.inkBudget = game.state.reserve; })}
-            {session.inkLeft < SURVIVOR.ink.minPlayable && <span className="sv-empty">Plus d’encre !</span>}
           </div>
+          {outMessage && <p className={out === 'validable' ? 'sv-notice sv-notice--ok' : 'sv-notice'} role="status">{outMessage}</p>}
           {notice && <p className="sv-notice" role="status">{notice}</p>}
+          {saveFail && (
+            <p className="sv-notice" role="alert">
+              {SAVE_MESSAGES[saveFail]} <ToyButton variant="soft" size="s" icon="rotate" onClick={onRetrySave}>Réessayer</ToyButton>
+            </p>
+          )}
         </div>
       }
     >
@@ -460,6 +488,7 @@ function ChooseView({ game, shop, onPick, onJoker, onMenu }: { game: SurvivorGam
     <div className="app-shell">
       <main>
         <PageFrame title={`Case ${s.caseNo}/${SURVIVOR.totalCases}`} subtitle={`${game.phaseLabel} · ${s.theme}`} tone="lavender" right={<span />}>
+          <ThemeLine theme={s.theme} />
           <div className="sv-choose-gauge">
             <InkGauge left={s.reserve} capacity={game.capacity} pending={0} label="Encre de dessin" />
           </div>
@@ -551,7 +580,10 @@ function End({ game, onRestart, onMenu, onArbiter }: { game: SurvivorGame; onRes
             <ul className="sv-stats">
               <li><strong>{game.finishedCases}</strong> case{game.finishedCases > 1 ? 's' : ''} terminée{game.finishedCases > 1 ? 's' : ''} sur {SURVIVOR.totalCases}</li>
               <li>Demandes choisies : {LEVELS.map((l) => `${chosen[l]} ${LEVEL_LABELS[l].toLowerCase()}${chosen[l] > 1 && l !== 'medium' ? 's' : ''}`).join(' · ')}</li>
-              <li><strong>{Math.round(s.totalSpent)}</strong> d’encre consommée au total</li>
+              <li>
+                <strong>{Math.ceil(s.totalSpent)}</strong> d’encre consommée au total
+                {(s.lostSpent ?? 0) > 0 && <> (dont {Math.ceil(s.lostSpent!)} sur la dernière case, non terminée)</>}
+              </li>
               <li>Améliorations : {owned.length ? owned.map((u) => `${u.name}${(s.upgrades[u.id] ?? 0) > 1 ? ` ×${s.upgrades[u.id]}` : ''}`).join(', ') : 'aucune'}</li>
             </ul>
           </ToyCard>

@@ -36,6 +36,7 @@ export function EditorWorkspace({ session, leading, trailing, brief, children }:
   const textInput = useRef<HTMLTextAreaElement>(null);
   const [mimoHint, setMimoHint] = useState(false);
   const [popped, setPopped] = useState(false);
+  const [placedNote, setPlacedNote] = useState<string | null>(null);
 
   useEffect(() => {
     session.reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
@@ -107,9 +108,16 @@ export function EditorWorkspace({ session, leading, trailing, brief, children }:
     window.setTimeout(() => setPopped(false), 320);
   };
 
+  useEffect(() => {
+    if (!placedNote) return;
+    const id = window.setTimeout(() => setPlacedNote(null), 1600);
+    return () => window.clearTimeout(id);
+  }, [placedNote]);
+
   const placeMimo = () => {
     if (!session.placeMimo()) return;
     setMimoHint(false);
+    if (session.ink) setPlacedNote('Mimo placé ✓');
     setPopped(true);
     window.setTimeout(() => setPopped(false), 320);
   };
@@ -212,6 +220,7 @@ export function EditorWorkspace({ session, leading, trailing, brief, children }:
           </div>
         )}
         {mimoHint && session.mimo && <MimoHint />}
+        {placedNote && !session.mimo && <p className="mimo-hint mimo-hint--done" role="status">{placedNote}</p>}
         <div className="ed-zoom" role="group" aria-label="Zoom" hidden={!!session.mimo || !!session.text || !!session.decor}>
           <ToyButton variant="soft" size="s" iconOnly icon="plus" onClick={() => stage.current?.zoomBy(1.25)} aria-label="Zoom avant" />
           <ToyButton variant="soft" size="s" iconOnly icon="minus" onClick={() => stage.current?.zoomBy(0.8)} aria-label="Zoom arrière" />

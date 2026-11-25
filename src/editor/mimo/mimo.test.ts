@@ -5,6 +5,7 @@ import { MIMO_DESIGNS, MIMO_EMOTIONS, MIMO_POSES, mimoShapes, type MimoSpec } fr
 import { ObjectGesture, TAP_MAX_MS, TAP_SLOP, mimoPlaceable } from './gesture';
 import { FX_DURATION, MIMO_INK, MIMO_MAX, MIMO_MIN, fxScale, mimoRect } from './mimo';
 import { rasterMimo } from './raster';
+import { samePixels } from '../../testing/pixels';
 
 const black = (m: Uint8Array) => m.reduce((a, b) => a + b, 0);
 const all: MimoSpec[] = [];
@@ -25,12 +26,16 @@ describe('dessin des Mimo', () => {
 
   it('reste dans sa boîte, sans toucher les bords (aucun trait rogné)', () => {
     for (const spec of all) {
+      let lo = Infinity;
+      let hi = -Infinity;
       for (const shape of mimoShapes(spec)) {
         for (const v of shape.pts) {
-          expect(v, JSON.stringify(spec)).toBeGreaterThan(1.7);
-          expect(v, JSON.stringify(spec)).toBeLessThan(98.3);
+          if (v < lo) lo = v;
+          if (v > hi) hi = v;
         }
       }
+      expect(lo, JSON.stringify(spec)).toBeGreaterThan(1.7);
+      expect(hi, JSON.stringify(spec)).toBeLessThan(98.3);
     }
   });
 
@@ -116,11 +121,11 @@ describe('placement dans l’éditeur', () => {
     s.beginMimo();
     s.cancelMimo();
     expect(s.mimo).toBeNull();
-    expect(s.project.pixels).toEqual(before);
+    samePixels(s.project.pixels, before);
     s.beginMimo();
     s.undo(); // « annuler » abandonne d’abord le Mimo en cours
     expect(s.mimo).toBeNull();
-    expect(s.project.pixels).toEqual(before);
+    samePixels(s.project.pixels, before);
   });
 
   it('fusionne le Mimo en noir sur le dessin existant, identique à l’aperçu', () => {
@@ -135,7 +140,7 @@ describe('placement dans l’éditeur', () => {
     const preview = s.current().pixels.slice();
     expect(s.placeMimo()).toBe(true);
     expect(s.mimo).toBeNull();
-    expect(s.project.pixels).toEqual(preview);
+    samePixels(s.project.pixels, preview);
     expect(placed(s)).toBeGreaterThan(300);
     expect(s.project.pixels[5 * WIDTH + 150]).toBe(2); // le trait rouge est resté
   });
@@ -183,9 +188,9 @@ describe('placement dans l’éditeur', () => {
     s.mimoStep('emotion', -1);
     s.mimoMoveTo(250, 100);
     s.mimoResize(80);
-    expect(s.project.pixels).toEqual(first);
+    samePixels(s.project.pixels, first);
     s.cancelMimo();
-    expect(s.project.pixels).toEqual(first);
+    samePixels(s.project.pixels, first);
   });
 
   it('autorise le dessin libre entre deux placements, et le Mimo suivant se pose par-dessus', () => {
@@ -219,12 +224,12 @@ describe('placement dans l’éditeur', () => {
     }
     for (let i = states.length - 2; i >= 0; i--) {
       s.undo();
-      expect(s.project.pixels).toEqual(states[i]);
+      samePixels(s.project.pixels, states[i]);
     }
     expect(s.canUndo).toBe(false);
     for (let i = 1; i < states.length; i++) {
       s.redo();
-      expect(s.project.pixels).toEqual(states[i]);
+      samePixels(s.project.pixels, states[i]);
     }
     expect(s.canRedo).toBe(false);
   });
@@ -267,7 +272,7 @@ describe('placement dans l’éditeur', () => {
     s.setTool('eraser');
     expect(s.tool).toBe('pen');
     expect(s.beginStamp('x')).toBe(false);
-    expect(s.current().pixels).toEqual(before);
+    samePixels(s.current().pixels, before);
     s.placeMimo();
     expect(s.project.pixels[20 * WIDTH + 5]).toBe(0);
   });
@@ -297,7 +302,7 @@ describe('placement dans l’éditeur', () => {
     direct.beginMimo();
     direct.mimoStep('pose');
     direct.placeMimo();
-    expect(s.project.pixels).toEqual(direct.project.pixels);
+    samePixels(s.project.pixels, direct.project.pixels);
   });
 
   it('anime très brièvement, et pas du tout si le système demande moins d’animations', () => {

@@ -2470,4 +2470,90 @@ await check('miniatures: première case lisible seulement; en Duel en cours, jam
   void t1;
 });
 
+
+// ───────────── Survivor matchmaking atomique (0018) ─────────────
+for (const nme of ['mm1', 'mm2', 'mm3', 'mm4', 'mm5', 'mm6']) {
+  const [{ id }] = (await db.query('insert into auth.users default values returning id')).rows;
+  sv[nme] = id;
+}
+const mmGame = async (id) => await row('select id, status, created_by, mode from survivor_games where id=$1', [id]);
+const playersOf = async (id) => (await db.query('select user_id from survivor_players where game_id=$1 order by seat', [id])).rows.map((r) => r.user_id);
+const open = (u, mode) => rpc(u, 'survivor_create_challenge', mode, 'open');
+await check('matchmaking: file vide, trois joueurs compatibles → deux appariés, le troisième attend; jamais son propre défi', async () => {
+  await closeAll();
+  for (const mode of ['duel', 'battle']) {
+    const a = await rpc('mm1', 'survivor_matchmake', mode);
+    if (a.outcome !== 'created') throw new Error('création ' + a.outcome);
+    const again = await rpc('mm1', 'survivor_matchmake', mode);
+    if (again.outcome !== 'searching' || again.game.id !== a.game.id) throw new Error('rejoint son propre défi ou en crée un second');
+    const b = await rpc('mm2', 'survivor_matchmake', mode);
+    if (b.outcome !== 'joined' || b.game.id !== a.game.id) throw new Error('appariement ' + b.outcome);
+    const c = await rpc('mm3', 'survivor_matchmake', mode);
+    if (c.outcome !== 'created' || c.game.id === a.game.id) throw new Error('le troisième doit attendre ' + c.outcome);
+    if ((await playersOf(a.game.id)).length !== 2) throw new Error('joueurs');
+    const waiting = (await db.query("select count(*)::int n from survivor_games where mode=$1 and status='searching'", [mode])).rows[0].n;
+    if (waiting !== 1) throw new Error(`${waiting} défis en attente`);
+    await closeAll();
+  }
+});
+await check('matchmaking: les invitations privées ne rejoignent jamais la file publique', async () => {
+  await closeAll();
+  const inv = gv(await rpc('mm1', 'survivor_create_challenge', 'duel', 'invite'));
+  const r = await rpc('mm2', 'survivor_matchmake', 'duel');
+  if (r.outcome !== 'created' || r.game.id === inv.id) throw new Error('invitation rejointe: ' + r.outcome);
+  if ((await mmGame(inv.id)).status !== 'searching') throw new Error('invitation modifiée');
+  await closeAll();
+});
+await check('matchmaking: défis ouverts laissés en attente par une course (état reproduit) → rattrapés sans rien détruire', async () => {
+  await closeAll();
+  // État que produirait la course: deux défis ouverts créés « en même temps », chacun ignorant l'autre.
+  const A = gv(await open('mm1', 'duel'));
+  const B = gv(await open('mm2', 'duel'));
+  const r = await rpc('mm2', 'survivor_matchmake', 'duel');
+  if (r.outcome !== 'joined' || r.game.id !== A.id) throw new Error('rattrapage: ' + r.outcome);
+  if ((await mmGame(B.id)).status !== 'cancelled' || (await mmGame(A.id)).status !== 'active') throw new Error('statuts');
+  if ((await playersOf(A.id)).length !== 2) throw new Error('joueurs');
+  await closeAll();
+  // Le défi dessiné ne peut pas être annulé: l'appelant dont le défi est vierge rejoint l'autre.
+  const C = gv(await open('mm1', 'duel'));
+  await turn('mm1', C.id, { finish: false });
+  const D = gv(await open('mm2', 'duel'));
+  const r2 = await rpc('mm2', 'survivor_matchmake', 'duel');
+  if (r2.outcome !== 'joined' || r2.game.id !== C.id) throw new Error('rejoint le défi dessiné: ' + r2.outcome);
+  if ((await row('select count(*)::int n from survivor_cases where game_id=$1', [C.id])).n !== 1) throw new Error('case perdue');
+  if ((await mmGame(D.id)).status !== 'cancelled') throw new Error('défi vierge non annulé');
+  await closeAll();
+  // Appelant avec cases, autre défi vierge: l'autre est annulé et son créateur placé dans le défi dessiné.
+  const E = gv(await open('mm3', 'duel'));
+  await turn('mm3', E.id, { finish: false });
+  const F = gv(await open('mm4', 'duel'));
+  const r3 = await rpc('mm3', 'survivor_matchmake', 'duel');
+  if (r3.outcome !== 'joined' || r3.game.id !== E.id) throw new Error('absorption: ' + r3.outcome);
+  if ((await mmGame(F.id)).status !== 'cancelled' || !(await playersOf(E.id)).includes(sv.mm4)) throw new Error('créateur non placé');
+  if ((await row('select count(*)::int n from survivor_cases where game_id=$1', [E.id])).n !== 1) throw new Error('case perdue');
+  await closeAll();
+  // Deux défis dessinés: rien n'est fusionné ni détruit.
+  const G = gv(await open('mm5', 'duel'));
+  await turn('mm5', G.id, { finish: false });
+  const H = gv(await open('mm6', 'duel'));
+  await turn('mm6', H.id, { finish: false });
+  const r4 = await rpc('mm6', 'survivor_matchmake', 'duel');
+  if (r4.outcome !== 'searching' || r4.game.id !== H.id) throw new Error('deux défis dessinés: ' + r4.outcome);
+  if ((await mmGame(G.id)).status !== 'searching') throw new Error('défi modifié');
+  await closeAll();
+});
+await check('matchmaking: limites de parties non terminées conservées, Relay inchangé', async () => {
+  await closeAll();
+  const max = (await row("select (survivor_rules() -> 'duel' ->> 'max_unfinished')::int m")).m;
+  for (let i = 0; i < max; i++) await rpc('mm1', 'survivor_create_challenge', 'duel', 'invite');
+  await expectErr('DUEL_LIMIT', () => rpc('mm1', 'survivor_matchmake', 'duel'));
+  await expectErr('DUEL_LIMIT', () => open('mm1', 'duel'));
+  await closeAll();
+  const r = await rpc('mm2', 'survivor_matchmake', 'relay');
+  if (r.outcome !== 'created' && r.outcome !== 'reserved') throw new Error('relay: ' + r.outcome);
+  const again = await rpc('mm2', 'survivor_matchmake', 'relay');
+  if (again.outcome !== 'reserved' || again.game.id !== r.game.id) throw new Error('réservation relay non reprise');
+  await closeAll();
+});
+
 console.log(results.join('\n'));

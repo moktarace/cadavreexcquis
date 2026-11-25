@@ -37,7 +37,7 @@ function toolButton(session: EditorSession, t: (typeof TOOLS)[number], className
   );
 }
 
-/** Commandes essentielles: stylo, gomme, et l'accès à la palette d'outils secondaire. */
+/** Commandes essentielles (en Survivor, `session.ink` est défini: icônes de personnage et de lettre pour Mimo et Texte): stylo, gomme, et l'accès à la palette d'outils secondaire. */
 export function ToolRow({ session, moreOpen, onMore, onMimo, onText }: { session: EditorSession; moreOpen: boolean; onMore: () => void; onMimo?: () => void; onText?: () => void }) {
   const other = TOOLS.find((t) => t.id === session.tool && !ESSENTIAL.includes(t.id));
   return (
@@ -49,17 +49,17 @@ export function ToolRow({ session, moreOpen, onMore, onMimo, onText }: { session
           className="tool-btn tool-btn--more tool-btn--mimo"
           variant="soft"
           size="s"
-          icon="plus"
+          icon={session.ink ? 'mimo' : 'plus'}
           disabled={!session.canAfford('mimo')}
-          aria-label="Ajouter un Mimo"
-          title="Ajouter un Mimo"
+          aria-label={session.ink ? 'Ajouter un personnage Mimo' : 'Ajouter un Mimo'}
+          title={session.ink ? 'Ajouter un personnage Mimo' : 'Ajouter un Mimo'}
           onClick={onMimo}
         >
           Mimo
         </ToyButton>
       )}
       {onText && (
-        <ToyButton className="tool-btn tool-btn--more tool-btn--mimo" variant="soft" size="s" icon="plus" disabled={!session.canAfford('text')} aria-label="Ajouter du texte" title="Ajouter du texte" onClick={onText}>
+        <ToyButton className="tool-btn tool-btn--more tool-btn--mimo" variant="soft" size="s" icon={session.ink ? 'text' : 'plus'} disabled={!session.canAfford('text')} aria-label="Ajouter du texte" title="Ajouter du texte" onClick={onText}>
           Texte
         </ToyButton>
       )}

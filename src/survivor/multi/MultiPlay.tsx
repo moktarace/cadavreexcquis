@@ -7,18 +7,19 @@ import { ToyButton, ToyCard, ToyDialog } from '../../ui';
 import { SURVIVOR } from '../config';
 import { LEVELS, LEVEL_LABELS, PHASE_LABELS, constraintById, diceOf, phaseOf } from '../constraints';
 import { exportSurvivorPng } from '../exportSheet';
-import { nonWhite, stuckNow } from '../game';
+import { drawnPixels, inkOutMessage, inkOutState, nonWhite, stuckNow } from '../game';
 import { duelVerdict, submitGameBd } from '../arbiter/api';
 import { NARRATIVE_LABELS, type NarrativeResult } from '../arbiter/types';
 import { ContextHint, NextActions, type AfterActions } from '../home/parts';
 import { matchState } from '../home/types';
-import { InkGauge, UpgradeChoice } from '../parts';
+import { CaseBrief, InkGauge, ThemeLine, UpgradeChoice } from '../parts';
 import { buyItem, type ShopInfo } from '../shop/api';
 import { BonusPill, ShopOffer, useShop } from '../shop/ShopOffer';
 import type { ShopItem } from '../game';
 import { inkRulesFor } from '../rules';
 import { UPGRADES, modifiersOf } from '../upgrades';
-import { declareStuck, extendReservation, fetchState, pickConstraint, playEmergency, playJoker, chooseUpgrade, setDemands, signedUrls, submitCase, uploadCaseImage } from './api';
+import { declareStuck, extendReservation, fetchState, pickConstraint, playEmergency, playJoker, chooseUpgrade, setDemands, submitCase, uploadCaseImage } from './api';
+import { CaseImage, useSignedImages } from './images';
 import { MODE_LABELS, RESULT_LABELS, describeGame, formatRemaining, type Level, type MpCase, type MpResult, type MpState } from './types';
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : 'Erreur inconnue.');
@@ -158,6 +159,7 @@ function Pick({ st, offer, shop, busy, error, onAct, onBack }: { st: MpState; of
       : 'L’éditeur a trois demandes. Laquelle glisses-tu dans l’histoire ?';
   return (
     <Frame title={`Case ${run.position}/${g.total_cases}`} subtitle={`${PHASE_LABELS[phaseOf(run.position, g.total_cases)]} · ${g.theme}`} onBack={onBack}>
+      <ThemeLine theme={g.theme} />
       <Standings st={st} />
       <ContextHint id="hint-ink">Chaque action de dessin consomme de l’encre de dessin (la jauge). Terminer une case en rend: plus la demande est dure, plus elle en rend.</ContextHint>
       {g.mode === 'relay' && <ContextHint id="hint-relay">En Relay, l’encre est commune: chaque trait fait fondre la réserve de toute l’équipe, et la BD est perdue si elle tombe à zéro.</ContextHint>}
@@ -220,7 +222,7 @@ function DrawCase({ st, offer, shop, onState, onResync, onAct, onBack }: { st: M
   // Panne d'encre: déclarée une fois; le serveur refuse tant qu'un secours existe.
   useEffect(() => {
     if (stuckSent.current || session.inkLeft >= SURVIVOR.ink.minPlayable) return;
-    if (stuckNow({ inkLeft: session.inkLeft, freeMimoLeft: session.freeMimoLeft, emergency: run.emergency, terminable: nonWhite(session.project.pixels) >= SURVIVOR.minCasePixels })) {
+    if (stuckNow({ inkLeft: session.inkLeft, freeMimoLeft: session.freeMimoLeft, emergency: run.emergency, terminable: nonWhite(drawnPixels(session)) >= SURVIVOR.minCasePixels })) {
       stuckSent.current = true;
       void onAct(() => declareStuck(g.id));
     }
@@ -264,6 +266,8 @@ function DrawCase({ st, offer, shop, onState, onResync, onAct, onBack }: { st: M
       return r;
     });
 
+  const out = inkOutState({ inkLeft: session.inkLeft, freeMimoLeft: session.freeMimoLeft, emergency: run.emergency, terminable: session.inkLeft < SURVIVOR.ink.minPlayable && nonWhite(drawnPixels(session)) >= SURVIVOR.minCasePixels });
+  const outMessage = inkOutMessage(out, { freeMimoLeft: session.freeMimoLeft, emergency: run.emergency });
   const rival = g.mode === 'battle' ? st.runs.find((r) => !r.is_me && !r.shared) : undefined;
   return (
     <EditorWorkspace
@@ -274,16 +278,7 @@ function DrawCase({ st, offer, shop, onState, onResync, onAct, onBack }: { st: M
       )}
       brief={
         <div className="sv-brief">
-          <div className="sv-brief__top">
-            <strong>{MODE_LABELS[g.mode]} · case {run.position}/{g.total_cases}</strong>
-            <span>{PHASE_LABELS[phaseOf(run.position, g.total_cases)]} · {g.theme}</span>
-          </div>
-          {asked && (
-            <div className="sv-ask">
-              <p className="sv-constraint"><span className="sv-dice" aria-label={`Dés ${asked.id}`}>{diceOf(asked.id)}</span> {asked.text}</p>
-              <span className="sv-reward" title="Encre gagnée en terminant la case">+{reward}</span>
-            </div>
-          )}
+          <CaseBrief theme={g.theme} phase={PHASE_LABELS[phaseOf(run.position, g.total_cases)]} caseNo={run.position} total={g.total_cases} modeLabel={MODE_LABELS[g.mode]} asked={asked} reward={reward} />
           <InkGauge left={session.inkLeft} capacity={run.capacity} pending={session.pendingCost} label={g.mode === 'relay' ? 'Encre commune' : 'Ton encre'} />
           {rival && <InkGauge left={rival.reserve} capacity={rival.capacity} rival label={`Encre de ${rival.nickname ?? 'l’adversaire'}`} />}
           <div className="sv-brief__tools">
@@ -292,13 +287,13 @@ function DrawCase({ st, offer, shop, onState, onResync, onAct, onBack }: { st: M
             {run.emergency > 0 && session.inkLeft < 10 && (
               <ToyButton variant="danger" size="s" icon="alert" onClick={emergency}>Dernier souffle +{SURVIVOR.upgrades.dernierSouffle}</ToyButton>
             )}
-            {session.inkLeft < SURVIVOR.ink.minPlayable && <span className="sv-empty">Plus d’encre !</span>}
             {st.cases.length > 0 && <ToyButton variant="soft" size="s" icon="eye" onClick={() => setPeek(true)}>Cases précédentes</ToyButton>}
           </div>
           <ToyDialog open={peek} title="Cases précédentes" onClose={() => setPeek(false)} actions={<ToyButton variant="primary" onClick={() => setPeek(false)}>Retour au dessin</ToyButton>}>
             <p className="hint">Ton dessin en cours reste là, intact.</p>
             <Gallery cases={st.cases} title={g.theme} />
           </ToyDialog>
+          {outMessage && <p className={out === 'validable' ? 'sv-notice sv-notice--ok' : 'sv-notice'} role="status">{outMessage}</p>}
           {notice && <p className="sv-notice" role="status">{notice}</p>}
         </div>
       }
@@ -364,32 +359,15 @@ function Waiting({ st, error, onRefresh, onBack, after }: { st: MpState; error: 
 
 // ───────────── BD produites et fin de partie ─────────────
 
-/** Adresses temporaires de lecture des images (bucket privé), demandées seulement pour les cases affichées. */
-export function useImages(cases: readonly { image_path: string }[]) {
-  const [urls, setUrls] = useState<Record<string, string>>({});
-  const key = cases.map((c) => c.image_path).join('|');
-  useEffect(() => {
-    const need = cases.map((c) => c.image_path).filter((p) => !urls[p]);
-    if (!need.length) return;
-    let live = true;
-    signedUrls(need).then((m) => live && setUrls((u) => ({ ...u, ...m })), () => undefined);
-    return () => {
-      live = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
-  return urls;
-}
-
 function Gallery({ cases, title, exportName }: { cases: readonly MpCase[]; title: string; exportName?: string }) {
-  const urls = useImages(cases);
+  const signed = useSignedImages(cases.map((c) => c.image_path));
   const [error, setError] = useState<string | null>(null);
   if (!cases.length) return null;
   const exportBd = async () => {
     try {
       const images = await Promise.all(
         cases.map(async (c) => {
-          const url = urls[c.image_path];
+          const url = signed.url(c.image_path);
           return url ? createImageBitmap(await (await fetch(url)).blob()) : undefined;
         }),
       );
@@ -404,7 +382,7 @@ function Gallery({ cases, title, exportName }: { cases: readonly MpCase[]; title
       <ul className="sv-review">
         {cases.map((c) => (
           <li key={`${c.bd_owner}-${c.position}`}>
-            {urls[c.image_path] ? <img className="sv-thumb" src={urls[c.image_path]} alt={`Case ${c.position}`} /> : <div className="sv-thumb sv-thumb--empty" role="img" aria-label={`Case ${c.position}`} />}
+            <CaseImage path={c.image_path} images={signed} alt={`Case ${c.position}`} className="sv-thumb" />
             <span className="sv-cap"><strong>{c.position}</strong> {c.mine ? 'Toi' : c.nickname} · {constraintById(c.constraint_id)?.text}</span>
           </li>
         ))}
@@ -473,7 +451,7 @@ function Finished({ st, onBack, after }: { st: MpState; onBack: () => void; afte
               <p className="plain-text"><strong>{r.shared ? 'BD collective' : r.is_me ? 'Toi' : r.nickname}</strong> · {r.outcome === 'defeat' ? 'panne d’encre' : r.outcome === 'victory' ? 'a tenu jusqu’au bout' : 'en cours'}</p>
               <ul className="sv-stats">
                 <li><strong>{r.cases_done}</strong>/{g.total_cases} cases terminées</li>
-                <li>Encre restante : {Math.ceil(r.reserve)} / {r.capacity} · consommée : {Math.round(r.total_spent)}</li>
+                <li>Encre restante : {Math.ceil(r.reserve)} / {r.capacity} · consommée sur les cases terminées : {Math.round(r.total_spent)}</li>
                 <li>Demandes : {n.easy} faciles · {n.medium} intermédiaires · {n.hard} difficiles</li>
                 <li>Améliorations : {owned.length ? owned.join(', ') : 'aucune'}</li>
               </ul>
