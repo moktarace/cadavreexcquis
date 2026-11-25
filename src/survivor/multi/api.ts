@@ -38,6 +38,20 @@ const MESSAGES: Record<string, string> = {
   INVALID_IMAGE: 'Le dessin envoyé n’est pas valide pour cette case.',
   IMAGE_MISSING: 'Le dessin n’a pas été reçu: réessaie.',
   INVALID_SUBMISSION: 'Cet envoi ne t’appartient pas.',
+  GAME_NOT_FINISHED: 'Seules les parties terminées peuvent être soumises.',
+  TOO_SHORT: 'Il faut au moins quatre cases terminées.',
+  INVALID_BD: 'Cette BD est invalide.',
+  BD_NOT_FOUND: 'Cette BD est introuvable.',
+  SOLO_LIMIT: 'Tu as déjà cinq BD Solo en attente d’arbitrage.',
+  CONSENT_FINAL: 'Ta décision est définitive.',
+  DAILY_LIMIT: 'Tu as atteint la limite d’arbitrages du jour: reviens demain.',
+  ARBITRATION_NOT_FOUND: 'Cet arbitrage est introuvable.',
+  ARBITRATION_CLOSED: 'Cet arbitrage est terminé.',
+  CASE_NOT_IN_ARBITRATION: 'Cette case ne fait pas partie de ton arbitrage.',
+  OWN_CASE: 'Tu ne peux pas juger tes propres créations.',
+  INVALID_VOTE: 'Vote invalide.',
+  INCOMPLETE: 'Il reste des cases à juger.',
+  BD_UNAVAILABLE: 'Cette BD n’est plus disponible.',
 };
 
 function db() {
@@ -45,7 +59,7 @@ function db() {
   return supabase;
 }
 
-async function rpc<T>(name: string, args?: Record<string, unknown>): Promise<T> {
+export async function rpc<T>(name: string, args?: Record<string, unknown>): Promise<T> {
   await ensureSession();
   const { data, error } = await db().rpc(name, args);
   if (error) {
@@ -98,7 +112,12 @@ const BUCKET = 'survivor';
 /** Envoie le PNG d'une case. Un fichier déjà reçu (relance après un échec) n'est pas une erreur: le chemin ne change pas. */
 export async function uploadCaseImage(gameId: string, submissionId: string, png: Uint8Array): Promise<string> {
   const me = await ensureSession();
-  const path = casePath(me.userId, gameId, submissionId);
+  return uploadPngAt(casePath(me.userId, gameId, submissionId), png);
+}
+
+/** Envoie un PNG à un chemin précis du bucket privé (une relance sur un chemin déjà reçu n'est pas une erreur). */
+export async function uploadPngAt(path: string, png: Uint8Array): Promise<string> {
+  await ensureSession();
   const { error } = await db().storage.from(BUCKET).upload(path, png, { contentType: 'image/png', upsert: false });
   if (error && !/already exists|duplicate/i.test(error.message)) {
     throw new ApiError('UPLOAD', /failed to fetch|networkerror|load failed/i.test(error.message) ? 'Pas de connexion au serveur.' : error.message);

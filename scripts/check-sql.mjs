@@ -1700,4 +1700,432 @@ await check('anti-abus: nombre d’appels limité; runs et règles internes inac
   await rpc('mia', 'survivor_abandon', g.id);
 });
 
+
+// ───────────── Survivor arbitre (0015) ─────────────
+for (const nme of ['ar1', 'ar2', 'ar3', 'ar4', 'ar5', 'ar6', 'so1', 'so2', 're1', 're2', 'du1', 'du2', 'du3', 'du4', 'du5', 'du6', 'ba1', 'ba2']) {
+  const [{ id }] = (await db.query('insert into auth.users default values returning id')).rows;
+  sv[nme] = id;
+}
+const uuid = () => crypto.randomUUID();
+const CONS = ['16', '31', '11', '21', '45', '32', '63', '36'];
+const arbNext = (u) => rpc(u, 'survivor_arbitrate_next');
+const finishArb = (u, id) => rpc(u, 'survivor_arbitration_finish', id);
+const casesOf = (view) => view.bds.flatMap((b) => b.cases);
+const voteAll = async (u, view, f) => { let i = 0; for (const c of casesOf(view)) await rpc(u, 'survivor_vote', view.id, c.id, f(c, i++)); };
+const bal = async (u) => Number((await row('select coalesce((select balance from survivor_wallets where user_id=$1), 0) b', [sv[u]])).b);
+const ledgerOf = async (u) => (await db.query('select reason, amount from survivor_ink_ledger where user_id=$1', [sv[u]])).rows;
+const putSolo = (u, bd, id = uuid()) =>
+  as(sv[u], "insert into storage.objects(bucket_id, name, owner, metadata) values ('survivor', $1, $2, $3)", [`${sv[u]}/${bd}/${id}.png`, sv[u], JSON.stringify({ size: 800, mimetype: 'image/png' })]).then(() => `${sv[u]}/${bd}/${id}.png`);
+const soloBd = async (u, n = 4, theme = 'Solo de test') => {
+  await db.query('delete from survivor_rate_limits');
+  const bd = uuid();
+  await rpc(u, 'survivor_solo_begin', bd, theme);
+  const cases = [];
+  for (let i = 0; i < n; i++) cases.push({ position: i + 1, constraint_id: CONS[i % CONS.length], image_path: await putSolo(u, bd) });
+  const r = await rpc(u, 'survivor_solo_submit', bd, JSON.stringify(cases), JSON.stringify({ outcome: 'defeat', reserve: 3 }));
+  return { bd, cases, r };
+};
+const isolate = async (keep) => {
+  const ids = (await db.query("update survivor_bds set status='declined' where status='open' and not (id = any($1::uuid[])) returning id", [keep])).rows.map((r) => r.id);
+  return () => db.query("update survivor_bds set status='open' where id = any($1::uuid[])", [ids]);
+};
+const bdsOf = async (game) => (await db.query('select id, owner_id, status, group_id from survivor_bds where game_id=$1 order by id', [game])).rows;
+const stuck = async (u, g) => {
+  await db.query("update survivor_runs set upgrades = upgrades - 'ami', emergency = 0 where game_id=$1 and (user_id=$2 or user_id is null)", [g, sv[u]]);
+  return rpc(u, 'survivor_declare_stuck', g);
+};
+const relayBd = async (a, b, n = 4) => {
+  await db.query("update survivor_games set status='abandoned', ended_reason='expired', finished_at=now() where mode='relay' and status='active'");
+  const g = gv(await rpc(a, 'survivor_matchmake', 'relay')).id;
+  for (let i = 0; i < n; i++) {
+    const u = i % 2 ? b : a;
+    await db.query('delete from survivor_rate_limits');
+    await rpc(u, 'survivor_reserve', g);
+    await turn(u, g, { level: i % 3 });
+  }
+  const last = n % 2 ? b : a;
+  await db.query('delete from survivor_rate_limits');
+  await rpc(last, 'survivor_reserve', g);
+  await stuck(last, g);
+  return g;
+};
+const duelOf = async (a, b, na, nb) => {
+  const g = await pair('duel', a, b);
+  for (const [u, n] of [[a, na], [b, nb]]) {
+    for (let i = 0; i < n; i++) await turn(u, g, { level: i % 3 });
+    await stuck(u, g);
+  }
+  return g;
+};
+
+let solo1;
+await check('solo: soumission minimale vérifiée côté serveur (fichiers, propriétaire, demandes, nombre de cases)', async () => {
+  const bd = uuid();
+  const put = (u, b) => putSolo(u, b);
+  await expectErr('row-level security', () => put('so1', bd)); // pas de brouillon: dépôt refusé
+  await rpc('so1', 'survivor_solo_begin', bd, 'Mon thème');
+  await expectErr('row-level security', () => put('so2', bd)); // le brouillon d'un autre
+  await expectErr('BD_NOT_FOUND', () => rpc('so2', 'survivor_solo_begin', bd, 'x'));
+  const mk = async (n) => Promise.all(Array.from({ length: n }, async (_, i) => ({ position: i + 1, constraint_id: CONS[i], image_path: await put('so1', bd) })));
+  await expectErr('TOO_SHORT', async () => rpc('so1', 'survivor_solo_submit', bd, JSON.stringify(await mk(3))));
+  const ok = await mk(4);
+  await expectErr('INVALID_BD', () => rpc('so1', 'survivor_solo_submit', bd, JSON.stringify([{ ...ok[0], constraint_id: 'zz' }, ...ok.slice(1)])));
+  await expectErr('INVALID_BD', () => rpc('so1', 'survivor_solo_submit', bd, JSON.stringify([{ ...ok[0], position: 2 }, ...ok.slice(1)])));
+  await expectErr('IMAGE_MISSING', () => rpc('so1', 'survivor_solo_submit', bd, JSON.stringify([{ ...ok[0], image_path: `${sv.so1}/${bd}/${uuid()}.png` }, ...ok.slice(1)])));
+  await expectErr('INVALID_IMAGE', () => rpc('so1', 'survivor_solo_submit', bd, JSON.stringify([{ ...ok[0], image_path: `${sv.so2}/${bd}/${uuid()}.png` }, ...ok.slice(1)])));
+  const big = await putSolo('so1', bd);
+  await db.query("update storage.objects set metadata = '{\"size\": 999999, \"mimetype\": \"image/png\"}' where name = $1", [big]);
+  await expectErr('INVALID_IMAGE', () => rpc('so1', 'survivor_solo_submit', bd, JSON.stringify([{ ...ok[0], image_path: big }, ...ok.slice(1)])));
+  const done = await rpc('so1', 'survivor_solo_submit', bd, JSON.stringify(ok), JSON.stringify({ outcome: 'victory' }));
+  if (done.status !== 'open') throw new Error(JSON.stringify(done));
+  if ((await rpc('so1', 'survivor_solo_submit', bd, JSON.stringify(ok))).outcome !== 'duplicate') throw new Error('envoi rejoué');
+  const b = await row('select source, status, claimed, arbitrations_max from survivor_bds where id=$1', [bd]);
+  if (b.source !== 'solo' || b.claimed.outcome !== 'victory' || b.arbitrations_max !== 3) throw new Error(JSON.stringify(b));
+  solo1 = bd;
+  if ((await row('select count(*)::int n from survivor_bd_cases where bd_id=$1', [bd])).n !== 4) throw new Error('cases');
+  if ((await as(sv.so2, 'select * from survivor_bd_cases')).length) throw new Error('cases lisibles directement');
+});
+await check('solo: pas plus de cinq BD en attente par joueur', async () => {
+  for (let i = 0; i < 5; i++) await soloBd('so2');
+  await db.query('delete from survivor_rate_limits');
+  await expectErr('SOLO_LIMIT', () => rpc('so2', 'survivor_solo_begin', uuid(), 'trop'));
+  await db.query("update survivor_bds set status = 'declined' where owner_id = $1", [sv.so2]);
+});
+
+let relayG, relayBdId;
+await check('relay: seules les parties terminées sont éligibles; consentement de chaque contributeur', async () => {
+  await expectErr('GAME_NOT_FOUND', () => rpc('ar1', 'survivor_submit_game_bd', uuid()));
+  relayG = await relayBd('re1', 're2', 4);
+  await expectErr('GAME_NOT_FOUND', () => rpc('ar1', 'survivor_submit_game_bd', relayG));
+  const open = gv(await rpc('re1', 'survivor_matchmake', 'relay')).id; // une partie en cours, déjà contribuée
+  await turn('re1', open);
+  await expectErr('GAME_NOT_FINISHED', () => rpc('re1', 'survivor_submit_game_bd', open));
+  await db.query("update survivor_games set status='abandoned', ended_reason='expired', finished_at=now() where id=$1", [open]);
+  const r = await rpc('re1', 'survivor_submit_game_bd', relayG);
+  relayBdId = r.bds[0];
+  const b = await row('select status, source from survivor_bds where id=$1', [relayBdId]);
+  if (r.outcome !== 'submitted' || b.status !== 'pending' || b.source !== 'relay') throw new Error(JSON.stringify([r, b]));
+  if ((await rpc('re2', 'survivor_submit_game_bd', relayG)).outcome !== 'duplicate') throw new Error('doublon');
+  const imgs = (await db.query('select count(*)::int n from survivor_bd_cases where bd_id=$1', [relayBdId])).rows[0].n;
+  if (imgs !== 4) throw new Error('cases copiées: ' + imgs);
+  const files = (await db.query('select count(distinct name)::int n from storage.objects where bucket_id=$1 and name in (select image_path from survivor_bd_cases where bd_id=$2)', ['survivor', relayBdId])).rows[0].n;
+  if (files !== 4) throw new Error('les références doivent pointer sur les PNG existants');
+});
+await check('consentement: en attente = non arbitrable; accepter ouvre; refuser ferme; décision définitive', async () => {
+  const restore = await isolate([relayBdId]);
+  try {
+    if ((await arbNext('ar1')).outcome !== 'none') throw new Error('BD arbitrable sans consentement');
+    await expectErr('BD_NOT_FOUND', () => rpc('ar2', 'survivor_consent', relayBdId, true));
+    const h = await rpc('re2', 'survivor_hub');
+    if (h.consents.length !== 1 || h.consents[0].bd_id !== relayBdId) throw new Error(JSON.stringify(h.consents));
+    await expectErr('CONSENT_FINAL', async () => { await rpc('re2', 'survivor_consent', relayBdId, true); await rpc('re2', 'survivor_consent', relayBdId, false); });
+    if ((await row('select status from survivor_bds where id=$1', [relayBdId])).status !== 'open') throw new Error('non ouverte');
+    if ((await rpc('re2', 'survivor_consent', relayBdId, true)).outcome !== 'duplicate') throw new Error('consentement rejoué');
+  } finally { await restore(); }
+  const g2 = await relayBd('re2', 're1', 4);
+  const bd2 = (await rpc('re2', 'survivor_submit_game_bd', g2)).bds[0];
+  await rpc('re1', 'survivor_consent', bd2, false);
+  if ((await row('select status from survivor_bds where id=$1', [bd2])).status !== 'declined') throw new Error('non refusée');
+});
+
+await check('attribution: automatique, anonymisée, reprise sans changer, jamais ses propres créations', async () => {
+  const restore = await isolate([solo1, relayBdId]);
+  try {
+    const a = await arbNext('so1');
+    const v = a.arbitration;
+    if (a.outcome !== 'assigned' || v.theme === 'Mon thème') throw new Error('doit recevoir la BD de contributeurs, pas la sienne');
+    const flat = JSON.stringify(a);
+    if (/nickname|author|Joueur|owner|ink|reward|arbitrations/i.test(flat.replace(/"reward":null/, ''))) throw new Error('fuite: ' + flat.slice(0, 300));
+    const again = await arbNext('so1');
+    if (again.outcome !== 'resumed' || again.arbitration.id !== v.id) throw new Error('reprise');
+    if (JSON.stringify(await rpc('so1', 'survivor_arbitration_current')) !== JSON.stringify(again.arbitration)) throw new Error('current');
+    await rpc('so1', 'survivor_arbitration_abandon', v.id);
+    // auteurs de la BD collective: seule la BD Solo d'autrui leur est proposée
+    const own = await arbNext('re1');
+    const bdOf = (await row('select bd_id from survivor_arbitration_bds where arbitration_id=$1', [own.arbitration.id])).bd_id;
+    if (bdOf !== solo1) throw new Error('un contributeur a reçu sa propre BD');
+    await rpc('re1', 'survivor_arbitration_abandon', own.arbitration.id);
+    if ((await arbNext('so1')).outcome !== 'none') throw new Error('une BD abandonnée est reproposée au même arbitre');
+  } finally { await restore(); }
+});
+
+let arbView;
+await check('lecture: l’arbitre ne voit que les images de son attribution, tables fermées', async () => {
+  const restore = await isolate([solo1]);
+  try {
+    const a = await arbNext('ar1');
+    arbView = a.arbitration;
+    const paths = casesOf(arbView).map((c) => c.image_path);
+    const q = "select name from storage.objects where bucket_id='survivor' and name = any($1::text[])";
+    if ((await as(sv.ar1, q, [paths])).length !== paths.length) throw new Error('images de l’attribution illisibles');
+    const other = (await db.query('select image_path p from survivor_bd_cases where bd_id=$1', [relayBdId])).rows.map((r) => r.p);
+    if ((await as(sv.ar1, q, [other])).length !== 0) throw new Error('image d’une autre BD lisible');
+    if ((await as(sv.ar2, q, [paths])).length !== 0) throw new Error('image lisible sans attribution');
+    for (const t of ['survivor_bds', 'survivor_bd_cases', 'survivor_votes', 'survivor_arbitrations', 'survivor_consents', 'survivor_flags', 'survivor_bd_authors']) {
+      if ((await as(sv.ar1, `select * from ${t}`)).length) throw new Error(`${t} lisible`);
+    }
+    await expectErr('row-level security', () => as(sv.ar1, "insert into survivor_votes(arbitration_id, case_id, vote) values ($1, $2, 'up')", [arbView.id, casesOf(arbView)[0].id]));
+  } finally { await restore(); }
+});
+await check('votes: provisoires et modifiables, strictement limités à l’attribution; aucune récompense avant la validation', async () => {
+  const cs = casesOf(arbView);
+  await expectErr('ARBITRATION_NOT_FOUND', () => rpc('ar2', 'survivor_vote', arbView.id, cs[0].id, 'up'));
+  const foreign = (await row('select id from survivor_bd_cases where bd_id=$1 limit 1', [relayBdId])).id;
+  await expectErr('CASE_NOT_IN_ARBITRATION', () => rpc('ar1', 'survivor_vote', arbView.id, foreign, 'up'));
+  await expectErr('INVALID_VOTE', () => rpc('ar1', 'survivor_vote', arbView.id, cs[0].id, 'meh'));
+  await rpc('ar1', 'survivor_vote', arbView.id, cs[0].id, 'up');
+  let v = await rpc('ar1', 'survivor_vote', arbView.id, cs[0].id, 'down');
+  if (v.bds[0].cases[0].vote !== 'down' || v.voted !== 1) throw new Error('vote non modifié');
+  v = await rpc('ar1', 'survivor_vote', arbView.id, cs[0].id, null);
+  if (v.voted !== 0) throw new Error('vote non effacé');
+  await expectErr('INCOMPLETE', () => finishArb('ar1', arbView.id));
+  await rpc('ar1', 'survivor_vote', arbView.id, cs[0].id, 'up');
+  if ((await bal('ar1')) !== 0 || (await ledgerOf('ar1')).length) throw new Error('récompense avant validation');
+});
+await check('validation: récompenses du serveur, identiques pour up et down, versées une seule fois; votes définitifs', async () => {
+  await voteAll('ar1', arbView, (c, i) => (i % 2 ? 'down' : 'up'));
+  const before = await bal('so1');
+  const r = await finishArb('ar1', arbView.id);
+  if (r.outcome !== 'completed' || r.arbitration.reward !== 4 * 2 + 10 || r.arbitration.up !== 2 || r.arbitration.down !== 2) throw new Error(JSON.stringify(r));
+  if ((await bal('ar1')) !== 18) throw new Error(`arbitre ${await bal('ar1')}`);
+  if ((await bal('so1')) - before !== 2 * 5) throw new Error('auteur: 5 par upvote, rien pour un downvote');
+  const again = await finishArb('ar1', arbView.id);
+  if (again.outcome !== 'duplicate' || (await bal('ar1')) !== 18 || (await bal('so1')) - before !== 10) throw new Error('récompense versée deux fois');
+  await expectErr('ARBITRATION_CLOSED', () => rpc('ar1', 'survivor_vote', arbView.id, casesOf(arbView)[0].id, 'down'));
+  await expectErr('ARBITRATION_CLOSED', () => rpc('ar1', 'survivor_arbitration_abandon', arbView.id));
+  const files = await as(sv.ar1, "select name from storage.objects where bucket_id='survivor' and name = any($1::text[])", [casesOf(arbView).map((c) => c.image_path)]);
+  if (files.length) throw new Error('accès aux images conservé après l’arbitrage');
+  const bonus = (await ledgerOf('ar1')).filter((l) => l.reason === 'arbiter_complete');
+  if (bonus.length !== 1 || bonus[0].amount !== 10) throw new Error('bonus');
+});
+await check('même rémunération de l’arbitre quel que soit le sens des votes', async () => {
+  const restore = await isolate([solo1]);
+  try {
+    const a2 = (await arbNext('ar2')).arbitration;
+    await voteAll('ar2', a2, () => 'up');
+    await finishArb('ar2', a2.id);
+    const a3 = (await arbNext('ar3')).arbitration;
+    await voteAll('ar3', a3, () => 'down');
+    const before = await bal('so1');
+    await finishArb('ar3', a3.id);
+    if ((await bal('ar2')) !== 18 || (await bal('ar3')) !== 18) throw new Error(`${await bal('ar2')} ${await bal('ar3')}`);
+    if ((await bal('so1')) !== before) throw new Error('un downvote a modifié le solde de l’auteur');
+    const closed = await arbNext('ar4');
+    if (closed.outcome !== 'none') throw new Error('BD au-delà de son maximum d’arbitrages');
+    if ((await row('select arbitrations_done d from survivor_bds where id=$1', [solo1])).d !== 3) throw new Error('compteur');
+  } finally { await restore(); }
+});
+await check('récompense du véritable auteur de chaque case (BD collective Relay et Battle)', async () => {
+  const restore = await isolate([relayBdId]);
+  try {
+    const a = (await arbNext('ar4')).arbitration;
+    await voteAll('ar4', a, () => 'up');
+    const b1 = await bal('re1'), b2 = await bal('re2');
+    await finishArb('ar4', a.id);
+    const authors = (await db.query('select author_id, count(*)::int n from survivor_bd_cases where bd_id=$1 group by author_id', [relayBdId])).rows;
+    for (const x of authors) {
+      const name = x.author_id === sv.re1 ? 're1' : 're2';
+      const gain = (await bal(name)) - (name === 're1' ? b1 : b2);
+      if (gain !== x.n * 5) throw new Error(`${name}: ${gain} ≠ ${x.n * 5}`);
+    }
+    if (authors.length !== 2) throw new Error('deux auteurs attendus');
+  } finally { await restore(); }
+  const bg = await pair('battle', 'ba1', 'ba2');
+  const first = (await row('select turn_player from survivor_games where id=$1', [bg])).turn_player === sv.ba1 ? 'ba1' : 'ba2';
+  const second = first === 'ba1' ? 'ba2' : 'ba1';
+  for (let i = 0; i < 4; i++) { await db.query('delete from survivor_rate_limits'); await turn(i % 2 ? second : first, bg, { level: i % 3 }); }
+  await stuck(first, bg);
+  const bb = (await rpc('ba1', 'survivor_submit_game_bd', bg)).bds[0];
+  await rpc('ba2', 'survivor_consent', bb, true);
+  if ((await row('select status, source from survivor_bds where id=$1', [bb])).status !== 'open') throw new Error('BD Battle non ouverte');
+  const info = await row('select count(distinct author_id)::int n from survivor_bd_cases where bd_id=$1', [bb]);
+  if (info.n !== 2) throw new Error('auteurs');
+});
+
+await check('abandon et signalement: aucune récompense, BD toujours disponible; un signalement masque la BD', async () => {
+  const bd = (await soloBd('so1', 4, 'À signaler')).bd;
+  const restore = await isolate([bd]);
+  try {
+    const a = (await arbNext('ar5')).arbitration;
+    await voteAll('ar5', a, () => 'up');
+    await rpc('ar5', 'survivor_arbitration_abandon', a.id);
+    if ((await rpc('ar5', 'survivor_arbitration_abandon', a.id)).outcome !== 'duplicate') throw new Error('abandon rejoué');
+    if ((await bal('ar5')) !== 0 || (await row('select count(*)::int n from survivor_votes where arbitration_id=$1', [a.id])).n !== 0) throw new Error('récompense ou votes conservés');
+    const b = (await arbNext('ar6')).arbitration;
+    if (!b) throw new Error('la BD a été verrouillée par un abandon');
+    await voteAll('ar6', b, () => 'up');
+    const fl = await rpc('ar6', 'survivor_arbitration_flag', b.id, 1, 'inappropriate');
+    if (fl.outcome !== 'flagged' || (await bal('ar6')) !== 0) throw new Error('signalement récompensé');
+    if ((await row('select status from survivor_bds where id=$1', [bd])).status !== 'hidden') throw new Error('BD non masquée');
+    await expectErr('ARBITRATION_CLOSED', () => finishArb('ar6', b.id));
+    await expectErr('FORBIDDEN', () => as(sv.ar6, "select survivor_admin_bd_status($1, 'open')", [bd]));
+    await as(users.adm, "select survivor_admin_bd_status($1, 'open')", [bd]);
+    if ((await row('select status from survivor_bds where id=$1', [bd])).status !== 'open') throw new Error('rétablissement');
+  } finally { await restore(); await db.query("update survivor_bds set status='declined' where id=$1", [bd]); }
+});
+await check('capacité: les attributions en cours comptent, une attribution périmée libère sa place; validation refusée au-delà du maximum', async () => {
+  const bd = (await soloBd('so2', 4, 'Capacité')).bd;
+  const restore = await isolate([bd]);
+  try {
+    await db.query("update survivor_arbitrations set status = 'abandoned' where status = 'assigned'");
+    const got = [];
+    for (const u of ['ar1', 'ar2', 'ar3']) got.push((await arbNext(u)).arbitration);
+    if ((await arbNext('ar4')).outcome !== 'none') throw new Error('plus de trois attributions simultanées');
+    await db.query("update survivor_arbitrations set created_at = now() - interval '2 hours' where id = $1", [got[0].id]);
+    const late = await arbNext('ar4');
+    if (late.outcome !== 'assigned') throw new Error('attribution périmée non libérée');
+    await voteAll('ar2', got[1], () => 'up'); await finishArb('ar2', got[1].id);
+    await voteAll('ar3', got[2], () => 'up'); await finishArb('ar3', got[2].id);
+    await voteAll('ar4', late.arbitration, () => 'up'); await finishArb('ar4', late.arbitration.id);
+    await voteAll('ar1', got[0], () => 'up');
+    const before = await bal('ar1');
+    const r = await finishArb('ar1', got[0].id);
+    if (r.outcome !== 'closed' || (await bal('ar1')) !== before) throw new Error('quatrième arbitrage récompensé');
+    if ((await row('select arbitrations_done d from survivor_bds where id=$1', [bd])).d !== 3) throw new Error('maximum dépassé');
+  } finally { await restore(); await db.query("update survivor_bds set status='declined' where id=$1", [bd]); }
+});
+await check('limites: une seule attribution en cours, cinq arbitrages complets par jour', async () => {
+  await expectErr('duplicate key', () => db.query("insert into survivor_arbitrations(arbiter_id, unit_key, status) select $1, gen_random_uuid(), 'assigned' from generate_series(1,2)", [sv.ar5]));
+  for (let i = 0; i < 5; i++) await db.query("insert into survivor_arbitrations(arbiter_id, unit_key, status, completed_at) values ($1, gen_random_uuid(), 'completed', now())", [sv.ar5]);
+  await soloBd('so1', 4, 'Pour la limite');
+  await expectErr('DAILY_LIMIT', () => arbNext('ar5'));
+  await db.query("update survivor_arbitrations set completed_at = now() - interval '2 days' where arbiter_id = $1 and status = 'completed'", [sv.ar5]);
+  const ok = await arbNext('ar5');
+  if (ok.outcome !== 'assigned') throw new Error('limite non levée le lendemain');
+  await rpc('ar5', 'survivor_arbitration_abandon', ok.arbitration.id);
+});
+await check('arbitre: cases propres refusées même si une attribution est forcée', async () => {
+  const own = await soloBd('so2', 4, 'Sa propre BD');
+  const [{ id: arb }] = (await db.query("insert into survivor_arbitrations(arbiter_id, unit_key, status) values ($1, $2, 'assigned') returning id", [sv.so2, own.bd])).rows;
+  await db.query('insert into survivor_arbitration_bds(arbitration_id, bd_id, slot) values ($1, $2, 1)', [arb, own.bd]);
+  const c = (await row('select id from survivor_bd_cases where bd_id=$1 limit 1', [own.bd])).id;
+  await expectErr('OWN_CASE', () => rpc('so2', 'survivor_vote', arb, c, 'up'));
+  await db.query("update survivor_arbitrations set status='abandoned' where id=$1", [arb]);
+  await db.query("update survivor_bds set status='declined' where id=$1", [own.bd]);
+});
+
+await check('registre d’encre bonus: lecture de soi seulement, aucune écriture client, clés uniques, solde cohérent', async () => {
+  const w = await rpc('ar1', 'survivor_wallet');
+  if (w.balance !== 18 || w.history.length !== 5 || !w.history.some((h) => h.reason === 'arbiter_complete')) throw new Error(JSON.stringify(w));
+  if (JSON.stringify(w).includes(sv.so1)) throw new Error('identité exposée');
+  const mineRows = await as(sv.ar1, 'select user_id from survivor_ink_ledger');
+  if (!mineRows.length || mineRows.some((r) => r.user_id !== sv.ar1)) throw new Error('registre des autres lisible');
+  if ((await as(sv.ar1, 'select user_id from survivor_wallets')).some((r) => r.user_id !== sv.ar1)) throw new Error('soldes des autres lisibles');
+  await expectErr('row-level security', () => as(sv.ar1, "insert into survivor_ink_ledger(user_id, amount, reason, idempotency_key) values ($1, 100, 'arbiter_vote', 'x')", [sv.ar1]));
+  await expectErr('row-level security', () => as(sv.ar1, "insert into survivor_wallets(user_id, balance) values ($1, 999)", [sv.ar1]));
+  if ((await as(sv.ar1, 'update survivor_wallets set balance = 999 returning user_id')).length) throw new Error('solde modifiable');
+  await expectErr('Table immuable', () => db.query("update survivor_ink_ledger set amount = 99 where user_id = $1", [sv.ar1]));
+  await expectErr('duplicate key', () => db.query("insert into survivor_ink_ledger(user_id, amount, reason, idempotency_key) select user_id, amount, reason, idempotency_key from survivor_ink_ledger limit 1"));
+  await expectErr('check constraint', () => db.query("insert into survivor_ink_ledger(user_id, amount, reason, idempotency_key) values ($1, -5, 'arbiter_vote', 'neg')", [sv.ar1]));
+  const sums = (await db.query('select w.user_id from survivor_wallets w where w.balance <> (select coalesce(sum(amount), 0) from survivor_ink_ledger l where l.user_id = w.user_id)')).rows;
+  if (sums.length) throw new Error('solde ≠ somme du registre');
+  for (const f of ['survivor_arbitration_json($1::uuid)', 'survivor_candidate_units($1::uuid)', 'survivor_settle_duel($1::uuid)']) {
+    await expectErr('permission denied', () => as(sv.ar1, `select ${f}`, [uuid()]));
+  }
+});
+
+let duelA, duelB;
+await check('duel: les deux BD sont arbitrées ensemble, dans un ordre aléatoire, après consentement des deux auteurs', async () => {
+  duelA = await duelOf('du1', 'du2', 5, 4);
+  const before = await row('select status, ended_reason from survivor_games where id=$1', [duelA]);
+  const sub = await rpc('du1', 'survivor_submit_game_bd', duelA);
+  if (sub.bds.length !== 2) throw new Error('deux BD attendues');
+  const bds = await bdsOf(duelA);
+  if (!bds[0].group_id || bds[0].group_id !== bds[1].group_id || bds.some((b) => b.status !== 'pending' && b.owner_id !== sv.du1)) throw new Error(JSON.stringify(bds));
+  const v0 = await rpc('du1', 'survivor_duel_verdict', duelA);
+  if (v0.status !== 'pending') throw new Error(JSON.stringify(v0));
+  const restore = await isolate(bds.map((b) => b.id));
+  try {
+    if ((await arbNext('ar1')).outcome !== 'none') throw new Error('Duel arbitré avant le consentement des deux auteurs');
+    await rpc('du2', 'survivor_consent', (await row('select id from survivor_bds where game_id=$1 and owner_id=$2', [duelA, sv.du2])).id, true);
+    const a = (await arbNext('ar1')).arbitration;
+    if (!a.duel || a.bds.length !== 2 || a.bds[0].label !== 'A' || a.bds[1].label !== 'B') throw new Error('comparaison A/B attendue');
+    if (a.total !== 9) throw new Error(`${a.total} cases`);
+    await voteAll('ar1', a, () => 'up');
+    await finishArb('ar1', a.id);
+    for (const b of bds) if ((await row('select arbitrations_done d from survivor_bds where id=$1', [b.id])).d !== 1) throw new Error('les deux BD doivent avancer ensemble');
+    // les mêmes arbitres voient toujours les deux BD, jamais une seule
+    const orders = new Set();
+    for (const u of ['ar2', 'ar3']) {
+      const x = (await arbNext(u)).arbitration;
+      orders.add(x.bds.map((b) => b.cases.length).join());
+      await voteAll(u, x, () => 'up');
+      await finishArb(u, x.id);
+    }
+    const g = await row('select verdict, winner from survivor_bd_groups where game_id=$1', [duelA]);
+    if (g.verdict !== 'win' || g.winner !== sv.du1) throw new Error('la BD la plus complète (5 upvotes par arbitre contre 4) doit gagner: ' + JSON.stringify(g));
+    const after = await row('select status, ended_reason from survivor_games where id=$1', [duelA]);
+    if (JSON.stringify(after) !== JSON.stringify(before)) throw new Error('le résultat de survie a été modifié');
+    const mine = await rpc('du1', 'survivor_duel_verdict', duelA), rival = await rpc('du2', 'survivor_duel_verdict', duelA);
+    if (mine.result !== 'win' || rival.result !== 'loss' || mine.my_ups !== 15 || mine.rival_ups !== 12) throw new Error(JSON.stringify([mine, rival]));
+    if ((await arbNext('ar4')).outcome !== 'none') throw new Error('le Duel a dépassé ses arbitrages');
+  } finally { await restore(); }
+});
+await check('duel: égalité déclarée, jamais de vainqueur sans les deux BD, forfaits intacts', async () => {
+  duelB = await duelOf('du3', 'du4', 4, 4);
+  await rpc('du3', 'survivor_submit_game_bd', duelB);
+  await rpc('du4', 'survivor_consent', (await row('select id from survivor_bds where game_id=$1 and owner_id=$2', [duelB, sv.du4])).id, true);
+  const bds = await bdsOf(duelB);
+  const restore = await isolate(bds.map((b) => b.id));
+  try {
+    for (const u of ['ar1', 'ar2', 'ar3']) {
+      await db.query("update survivor_arbitrations set completed_at = now() - interval '3 days' where arbiter_id = $1 and status = 'completed'", [sv[u]]);
+      const x = (await arbNext(u)).arbitration;
+      await voteAll(u, x, () => 'down');
+      await finishArb(u, x.id);
+    }
+    const t = await row('select verdict, winner from survivor_bd_groups where game_id=$1', [duelB]);
+    if (t.verdict !== 'tie' || t.winner !== null) throw new Error(JSON.stringify(t));
+  } finally { await restore(); }
+  const dg2 = await pair('duel', 'du5', 'du6');
+  await rpc('du6', 'survivor_abandon', dg2);
+  await expectErr('GAME_NOT_FINISHED', () => rpc('du5', 'survivor_submit_game_bd', dg2));
+  if ((await rpc('du5', 'survivor_duel_verdict', dg2)).status !== 'unavailable') throw new Error('verdict sans BD');
+  const g = await row('select status, ended_reason, forfeit_by from survivor_games where id=$1', [dg2]);
+  if (g.status !== 'abandoned' || g.forfeit_by !== sv.du6) throw new Error('forfait');
+});
+await check('duel: si l’autre auteur refuse, la BD restante est arbitrable seule et aucun vainqueur n’est déclaré', async () => {
+  const g = await duelOf('du5', 'du6', 4, 4);
+  await rpc('du5', 'survivor_submit_game_bd', g);
+  const theirs = (await row('select id from survivor_bds where game_id=$1 and owner_id=$2', [g, sv.du6])).id;
+  await rpc('du6', 'survivor_consent', theirs, false);
+  const mine = await row('select id, status, group_id from survivor_bds where game_id=$1 and owner_id=$2', [g, sv.du5]);
+  if (mine.status !== 'open' || mine.group_id !== null) throw new Error(JSON.stringify(mine));
+  if ((await rpc('du5', 'survivor_duel_verdict', g)).status !== 'unavailable') throw new Error('verdict artificiel');
+  const restore = await isolate([mine.id]);
+  try {
+    const a = (await arbNext('ar4')).arbitration;
+    if (a.duel) throw new Error('arbitrage comparatif sans la seconde BD');
+    await rpc('ar4', 'survivor_arbitration_abandon', a.id);
+  } finally { await restore(); }
+});
+await check('menu Arbitre: solde, BD disponibles (nombre), parties à soumettre et résultats reçus sans identité des arbitres', async () => {
+  const h = await rpc('so1', 'survivor_hub');
+  if (typeof h.available !== 'number' || h.balance < 10 || h.daily_limit !== 5) throw new Error(JSON.stringify(h).slice(0, 300));
+  const m = h.mine.find((x) => x.bd_id === solo1);
+  if (!m || m.arbitrations_done !== 3 || m.ups !== 2 + 4 + 0 || m.downs !== 2 + 0 + 4 || m.ink_earned !== (2 + 4) * 5) throw new Error(JSON.stringify(m));
+  if (JSON.stringify(h).includes(sv.ar1) || /arbiter/i.test(JSON.stringify(h.mine))) throw new Error('identité des arbitres exposée');
+  const d = await rpc('du1', 'survivor_hub');
+  const dm = d.mine.find((x) => x.game_id === duelA);
+  if (!dm || dm.narrative.status !== 'decided' || dm.narrative.result !== 'win') throw new Error(JSON.stringify(dm));
+  const s = await rpc('re1', 'survivor_hub');
+  if (!Array.isArray(s.submittable)) throw new Error('submittable');
+  const g = await row("select count(*)::int n from survivor_games where status = 'finished'");
+  void g;
+});
+await check('orphelins: les images déjà soumises à l’arbitrage ne sont jamais mises en file de suppression', async () => {
+  const kept = (await row('select image_path p from survivor_bd_cases limit 1')).p;
+  await db.query("update storage.objects set created_at = now() - interval '5 days' where name = $1", [kept]);
+  await db.query('update purge_state set enabled = true');
+  try {
+    await db.query('select survivor_queue_orphans()');
+    const q = (await db.query("select path from storage_deletions where path = $1", [kept])).rows;
+    if (q.length) throw new Error('image arbitrée mise en file de suppression');
+  } finally { await db.query('update purge_state set enabled = false'); }
+});
+await check('droits: nouvelles fonctions internes fermées aux clients et à anon', async () => {
+  await expectErr('permission denied', () => as(null, "select survivor_arbitrate_next()"));
+  await expectErr('NOT_AUTHENTICATED', () => db.query('select survivor_hub()'));
+});
+
 console.log(results.join('\n'));

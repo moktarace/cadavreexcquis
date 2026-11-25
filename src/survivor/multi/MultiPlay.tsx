@@ -9,6 +9,8 @@ import { SURVIVOR } from '../config';
 import { LEVELS, LEVEL_LABELS, PHASE_LABELS, constraintById, diceOf, phaseOf } from '../constraints';
 import { exportSurvivorPng } from '../exportSheet';
 import { nonWhite, stuckNow } from '../game';
+import { duelVerdict, submitGameBd } from '../arbiter/api';
+import { NARRATIVE_LABELS, type NarrativeResult } from '../arbiter/types';
 import { InkGauge, UpgradeChoice } from '../parts';
 import { inkRulesFor } from '../rules';
 import { UPGRADES, modifiersOf } from '../upgrades';
@@ -306,7 +308,8 @@ function Waiting({ st, error, onRefresh, onBack, onNext }: { st: MpState; error:
 
 // ───────────── BD produites et fin de partie ─────────────
 
-function useImages(cases: readonly MpCase[]) {
+/** Adresses temporaires de lecture des images (bucket privé), demandées seulement pour les cases affichées. */
+export function useImages(cases: readonly { image_path: string }[]) {
   const [urls, setUrls] = useState<Record<string, string>>({});
   const key = cases.map((c) => c.image_path).join('|');
   useEffect(() => {
@@ -373,11 +376,34 @@ function Finished({ st, onBack, onNext }: { st: MpState; onBack: () => void; onN
   const g = st.game;
   const owners = [...new Set(st.cases.map((c) => c.bd_owner))];
   const names = new Map<string, string>(UPGRADES.map((u) => [u.id, u.name]));
+  const [verdict, setVerdict] = useState<NarrativeResult | null>(null);
+  const [asked, setAsked] = useState<'idle' | 'sending' | 'done'>('idle');
+  const [askError, setAskError] = useState<string | null>(null);
+  useEffect(() => {
+    if (g.mode === 'duel' && g.status === 'finished') duelVerdict(g.id).then(setVerdict, () => undefined);
+  }, [g.id, g.mode, g.status]);
+  // Demande d'arbitrage: les autres contributeurs doivent accepter, la partie n'attend personne.
+  const askArbiters = async () => {
+    setAsked('sending');
+    setAskError(null);
+    try {
+      await submitGameBd(g.id);
+      setAsked('done');
+    } catch (e) {
+      setAsked('idle');
+      setAskError(errorText(e));
+    }
+  };
   return (
     <Frame title={g.status === 'cancelled' ? 'Défi annulé' : `${MODE_LABELS[g.mode]} terminé`} subtitle={`« ${g.theme} »`} onBack={onBack}>
       <ToyCard tone={g.result === 'victory' || g.result === 'win' ? 'green' : 'yellow'}>
         <p className="plain-text"><strong>{describeGame(g)}</strong></p>
-        {g.mode === 'duel' && <p className="hint">Pas de vainqueur désigné: chaque BD est jugée à part, et le départage narratif viendra avec les arbitres.</p>}
+        {g.mode === 'duel' && (
+          <p className="hint">
+            <strong>Survie</strong> : le résultat ci-dessous. <strong>Résultat narratif</strong> :{' '}
+            {verdict?.status === 'decided' && verdict.result ? `${NARRATIVE_LABELS[verdict.result]} (${verdict.my_ups} upvotes contre ${verdict.rival_ups})` : verdict?.status === 'pending' ? 'en attente des arbitres' : 'pas de vainqueur narratif (les deux BD ne sont pas arbitrées)'}.
+          </p>
+        )}
         {g.result && RESULT_LABELS[g.result] && g.status === 'finished' && g.mode !== 'duel' && <p className="hint">{RESULT_LABELS[g.result]}</p>}
       </ToyCard>
       <div className="sv-stats-table">
@@ -404,6 +430,19 @@ function Finished({ st, onBack, onNext }: { st: MpState; onBack: () => void; onN
         const title = g.mode === 'duel' ? (cases[0]?.mine ? 'Ma BD' : `BD de ${cases[0]?.nickname}`) : 'La BD';
         return <Gallery key={String(o)} cases={cases} title={title} exportName={`survivor-${g.mode}-${o ? o.slice(0, 4) : 'bd'}.png`} />;
       })}
+      {g.status === 'finished' && (
+        <ToyCard tone="lavender">
+          {asked === 'done' ? (
+            <p className="plain-text"><strong>Demande envoyée.</strong> Les autres contributeurs la verront dans « Arbitre » et devront accepter.</p>
+          ) : (
+            <>
+              <p className="hint">Facultatif: des arbitres anonymes jugeront le respect des contraintes (au moins quatre cases terminées).</p>
+              <ToyButton variant="soft" icon="eye" disabled={asked === 'sending'} onClick={() => void askArbiters()}>Soumettre aux arbitres</ToyButton>
+            </>
+          )}
+          {askError && <p className="sv-notice sv-notice--error" role="alert">{askError}</p>}
+        </ToyCard>
+      )}
       {onNext && <div className="row-buttons"><ToyButton variant="primary" icon="play" onClick={onNext}>Jouer une autre partie</ToyButton></div>}
     </Frame>
   );
