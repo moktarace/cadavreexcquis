@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { hrefOf } from '../../app/router';
 import { PageFrame } from '../../pages/shared';
 import { ToyButton, ToyCard } from '../../ui';
+import { MultiPlay } from './MultiPlay';
 import { abandonGame, acceptInvite, cancelChallenge, createChallenge, fetchRules, matchmake, myGames, peekInvite } from './api';
 import {
   BUCKET_LABELS,
@@ -47,6 +48,7 @@ export function MultiLab({ mode, onBack }: { mode: MultiMode; onBack: () => void
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [code, setCode] = useState('');
+  const [open, setOpen] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -76,8 +78,12 @@ export function MultiLab({ mode, onBack }: { mode: MultiMode; onBack: () => void
     }
   };
 
+  // Ouvre la partie directement quand c'est à moi de jouer.
+  const enter = (r: GameResult) => {
+    if (r.game.can_play) setOpen(r.game.id);
+  };
   const search = () =>
-    run('search', () => matchmake(mode), (r) => {
+    run('search', () => matchmake(mode).then((r) => (enter(r), r)), (r) => {
       if (mode !== 'relay' && (r.outcome === 'created' || r.outcome === 'searching')) {
         return 'Recherche enregistrée sur le serveur: tu peux fermer l’application, l’adversaire sera trouvé même hors ligne.';
       }
@@ -87,18 +93,24 @@ export function MultiLab({ mode, onBack }: { mode: MultiMode; onBack: () => void
   const join = () => {
     const token = tokenFrom(code);
     if (!token) return setNotice({ text: 'Colle le lien ou le code d’invitation complet.', error: true });
-    return run('join', () => acceptInvite(token));
+    return run('join', () => acceptInvite(token).then((r) => (enter(r), r)));
   };
 
+  const next = async () => {
+    setOpen(null);
+    await run('search', () => matchmake(mode).then((r) => (enter(r), r)));
+  };
   const mineOnly = (games ?? []).filter((g) => g.mode === mode);
   const buckets: Bucket[] = ['mine', 'waiting', 'done'];
+
+  if (open) return <MultiPlay gameId={open} onBack={() => { setOpen(null); void refresh(); }} onNext={() => void next()} />;
 
   return (
     <div className="app-shell">
       <main>
         <PageFrame title={MODE_LABELS[mode]} subtitle={`Laboratoire · ${MODE_BLURBS[mode]}`} backHref={hrefOf({ name: 'home' })} tone="lavender">
           <ToyCard tone="yellow">
-            <p className="hint"><strong>Banc d’essai de l’infrastructure.</strong> Le dessin multijoueur n’est pas encore disponible: ici, on crée, cherche, rejoint et consulte des parties réelles.</p>
+            <p className="hint"><strong>Parties réelles sur le serveur</strong> (connexion nécessaire). Tu peux fermer l’application: les parties et les délais continuent sans toi.</p>
             {rules && <p className="hint">{rulesLine(mode, rules)}</p>}
             <div className="row-buttons">
               <ToyButton variant="primary" icon="play" onClick={search} disabled={busy !== null}>Chercher une partie</ToyButton>
@@ -127,7 +139,7 @@ export function MultiLab({ mode, onBack }: { mode: MultiMode; onBack: () => void
                 <h2 className="sv-lab-title">{BUCKET_LABELS[b]} <span className="hint">({list.length})</span></h2>
                 {list.length === 0 && <p className="hint">Aucune partie.</p>}
                 {list.map((g) => (
-                  <GameCard key={g.id} game={g} busy={busy !== null} onAction={(key, action) => run(key, action)} />
+                  <GameCard key={g.id} game={g} busy={busy !== null} onOpen={() => setOpen(g.id)} onAction={(key, action) => run(key, action)} />
                 ))}
               </section>
             );
@@ -138,7 +150,7 @@ export function MultiLab({ mode, onBack }: { mode: MultiMode; onBack: () => void
   );
 }
 
-function GameCard({ game: g, busy, onAction }: { game: GameView; busy: boolean; onAction: (key: string, action: () => Promise<GameResult>) => void }) {
+function GameCard({ game: g, busy, onOpen, onAction }: { game: GameView; busy: boolean; onOpen: () => void; onAction: (key: string, action: () => Promise<GameResult>) => void }) {
   const link = g.invite_token ? inviteLink(g.invite_token) : null;
   const copy = () => void navigator.clipboard?.writeText(link!).catch(() => undefined);
   const abandon = () => {
@@ -163,8 +175,11 @@ function GameCard({ game: g, busy, onAction }: { game: GameView; busy: boolean; 
           <ToyButton variant="soft" icon="check" onClick={copy}>Copier</ToyButton>
         </div>
       )}
-      {g.can_play && <p className="hint"><strong>Dessin multijoueur indisponible</strong> pour l’instant (étape suivante).</p>}
+      {g.reserve !== null && g.status !== 'cancelled' && <p className="hint">Encre : {Math.ceil(g.reserve)} / {g.capacity}{g.mode === 'relay' ? ' (commune)' : ''}</p>}
       <div className="row-buttons">
+        {g.status !== 'cancelled' && (g.can_play || g.cases_done > 0 || g.players.some((p) => p.cases_done > 0) || g.status !== 'searching') && (
+          <ToyButton variant={g.can_play ? 'primary' : 'soft'} size="s" icon={g.can_play ? 'play' : 'eye'} onClick={onOpen}>{g.can_play ? 'Jouer' : g.bucket === 'done' ? 'Voir la BD' : 'Ouvrir'}</ToyButton>
+        )}
         {g.can_cancel && <ToyButton variant="soft" icon="alert" onClick={() => onAction(`cancel-${g.id}`, () => cancelChallenge(g.id))} disabled={busy}>Annuler le défi</ToyButton>}
         {g.can_abandon && <ToyButton variant="danger" size="s" icon="alert" onClick={abandon} disabled={busy}>{g.mode === 'relay' ? 'Libérer la case' : 'Abandonner'}</ToyButton>}
       </div>

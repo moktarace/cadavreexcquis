@@ -1,6 +1,6 @@
 import { ApiError, ensureSession } from '../../backend/api';
 import { supabase } from '../../backend/client';
-import type { GameResult, GameView, InvitePeek, MultiMode, Rules, SubmitCaseInput } from './types';
+import { casePath, type GameResult, type GameView, type InvitePeek, type MpResult, type MpState, type MultiMode, type Rules, type SubmitCaseInput } from './types';
 
 /** Messages des erreurs levées par les RPC `survivor_*`. */
 const MESSAGES: Record<string, string> = {
@@ -22,6 +22,22 @@ const MESSAGES: Record<string, string> = {
   NOT_CANCELLABLE: 'Ce défi a déjà été accepté.',
   NOT_ABANDONABLE: 'Cette partie ne peut pas être abandonnée.',
   INVALID_MODE: 'Mode inconnu.',
+  RATE_LIMITED: 'Trop d’actions en peu de temps: réessaie dans une minute.',
+  STEP_MISMATCH: 'Cette étape est déjà passée: la partie a été actualisée.',
+  STALE_STATE: 'La partie a changé: elle a été actualisée.',
+  STALE_POSITION: 'Cette case n’est plus la prochaine: la partie a été actualisée.',
+  PICK_LOCKED: 'Ta demande est déjà choisie.',
+  CONSTRAINT_NOT_ALLOWED: 'Cette demande ne fait pas partie des propositions.',
+  UPGRADE_PENDING: 'L’amélioration de la case précédente n’est pas encore choisie.',
+  UPGRADE_NOT_OFFERED: 'Cette amélioration n’est pas proposée.',
+  INVALID_DEMAND: 'Les demandes doivent être une facile, une intermédiaire et une difficile, adaptées à ce moment de l’histoire.',
+  NO_JOKER: 'Plus de Joker.',
+  NO_EMERGENCY: 'Plus de Dernier souffle.',
+  NOT_STUCK: 'Tu as encore un secours: pas de panne d’encre.',
+  INVALID_INK: 'La dépense d’encre déclarée est invalide.',
+  INVALID_IMAGE: 'Le dessin envoyé n’est pas valide pour cette case.',
+  IMAGE_MISSING: 'Le dessin n’a pas été reçu: réessaie.',
+  INVALID_SUBMISSION: 'Cet envoi ne t’appartient pas.',
 };
 
 function db() {
@@ -55,14 +71,48 @@ export const acceptInvite = (token: string) => rpc<GameResult>('survivor_accept_
 export const cancelChallenge = (id: string) => rpc<GameResult>('survivor_cancel', { p_game: id });
 export const abandonGame = (id: string) => rpc<GameResult>('survivor_abandon', { p_game: id });
 
-// Points d'intégration de l'étape suivante (pas encore utilisés par l'interface).
 export const reserveSlot = (id: string) => rpc<GameResult>('survivor_reserve', { p_game: id });
 export const extendReservation = (id: string) => rpc<GameResult>('survivor_extend_reservation', { p_game: id });
+
+// ───────────── Jeu (les règles et l'économie sont calculées par le serveur) ─────────────
+export const fetchState = (id: string) => rpc<MpState>('survivor_state', { p_game: id });
+export const pickConstraint = (id: string, constraintId: string) => rpc<MpResult>('survivor_pick', { p_game: id, p_constraint: constraintId });
+export const playJoker = (id: string, uses: number) => rpc<MpResult>('survivor_joker', { p_game: id, p_uses: uses });
+export const playEmergency = (id: string, uses: number) => rpc<MpResult>('survivor_use_emergency', { p_game: id, p_uses: uses });
+export const chooseUpgrade = (id: string, upgrade: string) => rpc<MpResult>('survivor_choose_upgrade', { p_game: id, p_upgrade: upgrade });
+export const setDemands = (id: string, ids: readonly string[]) => rpc<MpResult>('survivor_set_demands', { p_game: id, p_ids: ids });
+export const declareStuck = (id: string) => rpc<MpResult>('survivor_declare_stuck', { p_game: id });
 export const submitCase = (c: SubmitCaseInput) =>
-  rpc<GameResult>('survivor_submit_case', {
+  rpc<MpResult>('survivor_submit_case', {
     p_game: c.gameId,
+    p_position: c.position,
+    p_submission: c.submissionId,
     p_constraint: c.constraintId,
     p_image: c.imagePath,
     p_ink_spent: c.inkSpent,
-    p_ink_reward: c.inkReward,
   });
+
+// ───────────── Stockage privé des dessins ─────────────
+const BUCKET = 'survivor';
+
+/** Envoie le PNG d'une case. Un fichier déjà reçu (relance après un échec) n'est pas une erreur: le chemin ne change pas. */
+export async function uploadCaseImage(gameId: string, submissionId: string, png: Uint8Array): Promise<string> {
+  const me = await ensureSession();
+  const path = casePath(me.userId, gameId, submissionId);
+  const { error } = await db().storage.from(BUCKET).upload(path, png, { contentType: 'image/png', upsert: false });
+  if (error && !/already exists|duplicate/i.test(error.message)) {
+    throw new ApiError('UPLOAD', /failed to fetch|networkerror|load failed/i.test(error.message) ? 'Pas de connexion au serveur.' : error.message);
+  }
+  return path;
+}
+
+/** Adresses temporaires de lecture des dessins que le joueur a le droit de voir. */
+export async function signedUrls(paths: readonly string[]): Promise<Record<string, string>> {
+  if (!paths.length) return {};
+  await ensureSession();
+  const { data, error } = await db().storage.from(BUCKET).createSignedUrls([...paths], 3600);
+  if (error) throw new ApiError('SERVER', error.message);
+  const out: Record<string, string> = {};
+  for (const d of data ?? []) if (d.signedUrl && d.path) out[d.path] = d.signedUrl;
+  return out;
+}

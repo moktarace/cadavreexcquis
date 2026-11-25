@@ -54,7 +54,11 @@ export interface CaseGain {
 }
 
 const themes = (themeBank as { themes: { text: string }[] }).themes.map((t) => t.text);
-const nonWhite = (pixels: Uint8Array) => pixels.reduce((n, v) => n + (v ? 1 : 0), 0);
+export const nonWhite = (pixels: Uint8Array) => pixels.reduce((n, v) => n + (v ? 1 : 0), 0);
+
+/** Panne d'encre: plus de quoi tracer, aucun Mimo gratuit, aucun secours, et une case encore trop vide pour être terminée. */
+export const stuckNow = (o: { inkLeft: number; freeMimoLeft: boolean; emergency: number; terminable: boolean }) =>
+  o.inkLeft < SURVIVOR.ink.minPlayable && !o.freeMimoLeft && o.emergency <= 0 && !o.terminable;
 
 /** Une partie de Survivor: logique pure, sans interface; l'éditeur ne lui prête que ses pixels et l'encre dépensée. */
 export class SurvivorGame {
@@ -234,7 +238,7 @@ export class SurvivorGame {
    */
   isStuck(inkLeft: number, freeMimoLeft: boolean, pixels: Uint8Array): boolean {
     const s = this.state;
-    return s.phase === 'drawing' && inkLeft < SURVIVOR.ink.minPlayable && !freeMimoLeft && s.emergency <= 0 && !this.isTerminable(pixels);
+    return s.phase === 'drawing' && stuckNow({ inkLeft, freeMimoLeft, emergency: s.emergency, terminable: this.isTerminable(pixels) });
   }
 
   lose() {

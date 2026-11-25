@@ -10,7 +10,7 @@ await db.exec(`
   create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
   create schema storage;
   create table storage.buckets(id text primary key, name text, public bool, file_size_limit bigint, allowed_mime_types text[]);
-  create table storage.objects(id uuid default gen_random_uuid(), bucket_id text, name text, owner uuid, created_at timestamptz default now());
+  create table storage.objects(id uuid default gen_random_uuid(), bucket_id text, name text, owner uuid, created_at timestamptz default now(), metadata jsonb);
   alter table storage.objects enable row level security;
   create function storage.foldername(name text) returns text[] language sql as $$ select string_to_array(name, '/') $$;
   grant usage on schema auth, storage to authenticated, anon;
@@ -25,6 +25,7 @@ await db.exec(`
   grant all on all tables in schema public to authenticated, service_role;
   grant select on all tables in schema public to anon;
   grant all on all functions in schema public to service_role;
+  grant select, insert, update, delete on storage.objects to authenticated;
 `);
 
 const results = [];
@@ -1000,7 +1001,34 @@ const rpc = async (u, fn, ...args) =>
   (await as(sv[u], `select ${fn}(${args.map((_, i) => `$${i + 1}`).join(',')}) r`, args))[0].r;
 const gv = (r) => r.game;
 const row = async (sql, params) => (await db.query(sql, params)).rows[0];
-const submit = (u, id, k = 'a1') => rpc(u, 'survivor_submit_case', id, k, img(u), 3, 10);
+const state = (u, id) => rpc(u, 'survivor_state', id);
+const upload = (u, gid, sub, meta = { size: 1000, mimetype: 'image/png' }) =>
+  as(sv[u], "insert into storage.objects(bucket_id, name, owner, metadata) values ('survivor', $1, $2, $3)", [`${sv[u]}/${gid}/${sub}.png`, sv[u], JSON.stringify(meta)]);
+const rawSubmit = (u, gid, pos, sub, cons, path, spent = 0) => rpc(u, 'survivor_submit_case', gid, pos, sub, cons, path, spent);
+// Termine les étapes en attente (amélioration, demandes pour l'adversaire) tant que c'est à moi d'agir.
+const settle = async (u, id, st) => {
+  while (st.acting && ['upgrade', 'demands'].includes(st.run.step)) {
+    if (st.run.step === 'upgrade') st = (await rpc(u, 'survivor_choose_upgrade', id, st.run.offer[0])).state;
+    else {
+      const o = st.demand_options;
+      st = (await rpc(u, 'survivor_set_demands', id, [o.easy[0], o.medium[0], o.hard[0]])).state;
+    }
+  }
+  return st;
+};
+// Un tour complet: choix de la demande, envoi de l'image, dépôt de la case, puis étapes suivantes (sauf finish: false).
+const turn = async (u, id, o = {}) => {
+  await db.query('delete from survivor_rate_limits');
+  let st = await settle(u, id, await state(u, id));
+  if (!st.run.pick) st = (await rpc(u, 'survivor_pick', id, st.run.proposals[o.level ?? 0]?.id ?? '11')).state;
+  const sub = crypto.randomUUID();
+  await upload(u, id, sub);
+  const res = await rawSubmit(u, id, st.run.position, sub, st.run.pick, `${sv[u]}/${id}/${sub}.png`, o.spent ?? 3);
+  st = res.state;
+  if (o.finish !== false) st = await settle(u, id, st);
+  return { outcome: res.outcome, game: st.game, state: st };
+};
+const submit = turn;
 const mine = async (u) => (await as(sv[u], 'select survivor_my_games() r')).map((x) => x.r);
 
 await check('survivor: paramètres centralisés côté serveur', async () => {
@@ -1036,7 +1064,8 @@ await check('duel: défi ouvert créé avec une configuration figée, recherche 
 await check('duel: le créateur dessine avant l’appariement; il est « à toi de jouer »', async () => {
   const r = await submit('ana', duel.id);
   if (gv(r).status !== 'searching' || gv(r).bucket !== 'mine') throw new Error(JSON.stringify(gv(r)));
-  const dup = await rpc('ana', 'survivor_submit_case', duel.id, 'a1', `${sv.ana}/${svn}.png`, 3, 10);
+  const c = await row('select submission_id, constraint_id, image_path, position from survivor_cases where game_id=$1', [duel.id]);
+  const dup = await rawSubmit('ana', duel.id, c.position, c.submission_id, c.constraint_id, c.image_path, 3);
   if (dup.outcome !== 'duplicate') throw new Error('envoi rejoué non idempotent');
   const [{ n }] = (await db.query('select count(*)::int n from survivor_cases where game_id=$1', [duel.id])).rows;
   if (n !== 1) throw new Error(`${n} cases`);
@@ -1215,7 +1244,7 @@ await check('relay: réservation expirée = case libre; l’ancien détenteur ne
   await db.query("update survivor_reservations set expires_at = now() - interval '1 second' where game_id=$1 and not completed", [relay.id]);
   const d = await rpc('dan', 'survivor_matchmake', 'relay');
   if (gv(d).id !== relay.id) throw new Error('case non récupérée');
-  await expectErr('NO_RESERVATION', () => submit('cleo', relay.id));
+  await expectErr('NO_RESERVATION', () => rawSubmit('cleo', relay.id, 2, crypto.randomUUID(), '11', `${sv.cleo}/${relay.id}/x.png`));
 });
 await check('relay: prolongation limitée à 45 minutes au total', async () => {
   await db.query("update survivor_reservations set reserved_at = now() - interval '40 minutes', expires_at = now() + interval '1 minute' where game_id=$1 and not completed", [relay.id]);
@@ -1269,9 +1298,15 @@ await check('relay: 16 cases par relais, fin collective, plus aucun dépôt', as
 });
 await check('on ne dépose ni pour autrui ni hors de sa place', async () => {
   const g = gv(await rpc('ana', 'survivor_matchmake', 'relay'));
-  await expectErr('INVALID_IMAGE', () => rpc('ana', 'survivor_submit_case', g.id, 'a1', `${sv.ben}/x.png`, 0, 0));
-  await expectErr('INVALID_CASE', () => rpc('ana', 'survivor_submit_case', g.id, 'a1', img('ana'), -1, 0));
-  await expectErr('NO_RESERVATION', () => submit('ben', g.id));
+  const st = await state('ana', g.id);
+  const pick = st.run.proposals[0].id;
+  await rpc('ana', 'survivor_pick', g.id, pick);
+  const sub = crypto.randomUUID();
+  await upload('ana', g.id, sub);
+  const mine = `${sv.ana}/${g.id}/${sub}.png`;
+  await expectErr('INVALID_IMAGE', () => rawSubmit('ana', g.id, 1, sub, pick, `${sv.ben}/${g.id}/${sub}.png`));
+  await expectErr('INVALID_INK', () => rawSubmit('ana', g.id, 1, sub, pick, mine, -1));
+  await expectErr('NO_RESERVATION', () => rawSubmit('ben', g.id, 1, crypto.randomUUID(), pick, `${sv.ben}/${g.id}/x.png`));
 });
 await check('listes: catégories calculées par le serveur', async () => {
   const list = await mine('ben');
@@ -1279,6 +1314,390 @@ await check('listes: catégories calculées par le serveur', async () => {
   if (!['done', 'waiting', 'mine'].some((b) => buckets.has(b)) || list.some((x) => !['mine', 'waiting', 'done'].includes(x.bucket))) throw new Error([...buckets].join());
   if (list.some((x) => x.mode === 'duel' && x.status === 'finished' && x.bucket !== 'done')) throw new Error('catégorie');
   if (list.some((x) => x.invite_token)) throw new Error('jeton exposé hors de ses défis en attente');
+});
+
+
+// ───────────── Survivor gameplay multijoueur (0014) ─────────────
+for (const nme of ['kim', 'leo', 'mia', 'noa', 'oli', 'pam', 'ray', 'sol']) {
+  const [{ id }] = (await db.query('insert into auth.users default values returning id')).rows;
+  sv[nme] = id;
+}
+const free = () => db.query('delete from survivor_rate_limits');
+const pair = async (mode, a, b) => {
+  const g = gv(await rpc(a, 'survivor_create_challenge', mode, 'invite'));
+  await rpc(b, 'survivor_accept_invite', g.invite_token);
+  return g.id;
+};
+const runOf = async (u, id) => (await state(u, id)).run;
+const sameSet = (x, y) => JSON.stringify([...x].sort()) === JSON.stringify([...y].sort());
+const eligibleAt = async (pos, level) => (await db.query('select survivor_allowed($1, $2, 16, $3::text[], $4::text[]) a', [level, pos, [], []])).rows[0].a;
+
+await check('règles serveur: économie, banque de demandes et étapes alignées sur la configuration', async () => {
+  const e = (await row('select survivor_economy() e')).e;
+  const ok = e.ink.start === 100 && e.ink.capacity === 100 && e.rewards.easy === 10 && e.rewards.medium === 20 && e.rewards.hard === 35
+    && e.upgrade_every === 2 && e.offer_size === 3 && e.upgrades.encrier === 25 && e.upgrades.regeneration === 4 && e.upgrades.narrateur === 5
+    && e.upgrades.joker_charges === 2 && e.upgrades.dernier_souffle === 25;
+  if (!ok) throw new Error(JSON.stringify(e));
+  const lv = (await db.query("select level, count(*)::int n from survivor_constraints group by level order by level")).rows;
+  if (JSON.stringify(lv) !== JSON.stringify([{ level: 'easy', n: 12 }, { level: 'hard', n: 12 }, { level: 'medium', n: 12 }])) throw new Error(JSON.stringify(lv));
+  if ((await row('select count(*)::int n from survivor_upgrade_defs')).n !== 10) throw new Error('améliorations');
+  const phases = (await db.query('select survivor_phase_of(p, 16) f from generate_series(1, 16) p')).rows.map((r) => r.f);
+  if (phases.join() !== [...Array(4).fill('intro'), ...Array(4).fill('complication'), ...Array(4).fill('escalade'), ...Array(4).fill('denouement')].join()) throw new Error(phases.join());
+  const has = async (pos, id) => (await Promise.all(['easy', 'medium', 'hard'].map((l) => eligibleAt(pos, l)))).flat().includes(id);
+  if ((await has(1, '12')) || !(await has(2, '12'))) throw new Error('12');
+  for (const pos of [1, 2, 3, 4]) if (await has(pos, '66')) throw new Error('66 au début');
+  if (!(await has(6, '66'))) throw new Error('66');
+  for (const id of ['53', '51', '62', '33', '15']) if (await has(16, id)) throw new Error(`${id} à la fin`);
+});
+
+let rg;
+await check('relay: demandes, récompense et réserve commune calculées par le serveur', async () => {
+  rg = gv(await rpc('kim', 'survivor_matchmake', 'relay'));
+  const st = await state('kim', rg.id);
+  const p = st.run.proposals;
+  if (st.run.step !== 'choosing' || st.run.reserve !== 100 || st.run.capacity !== 100 || !st.acting) throw new Error(JSON.stringify(st.run));
+  if (p.map((x) => x.level).join() !== 'easy,medium,hard' || p.map((x) => x.reward).join() !== '10,20,35') throw new Error(JSON.stringify(p));
+  if (p.some((x) => ['12', '66'].includes(x.id))) throw new Error('demande inéligible proposée');
+  if (String(st.seed) !== String((await row('select seed from survivor_games where id=$1', [rg.id])).seed)) throw new Error('seed');
+  await expectErr('CONSTRAINT_NOT_ALLOWED', () => rpc('kim', 'survivor_pick', rg.id, ['11', '12', '13', '14', '15'].find((id) => !p.some((x) => x.id === id))));
+  await rpc('kim', 'survivor_pick', rg.id, p[2].id);
+  if ((await rpc('kim', 'survivor_pick', rg.id, p[2].id)).outcome !== 'duplicate') throw new Error('choix non idempotent');
+  await expectErr('PICK_LOCKED', () => rpc('kim', 'survivor_pick', rg.id, p[0].id));
+  await expectErr('PICK_LOCKED', () => rpc('kim', 'survivor_joker', rg.id, 0));
+});
+await check('relay: la dépense est vérifiée, jamais la récompense; les anciennes requêtes sont refusées', async () => {
+  const st = await state('kim', rg.id);
+  const sub = crypto.randomUUID();
+  await upload('kim', rg.id, sub);
+  const path = `${sv.kim}/${rg.id}/${sub}.png`;
+  const pick = st.run.pick;
+  await expectErr('INVALID_INK', () => rawSubmit('kim', rg.id, 1, sub, pick, path, 100.5));
+  await expectErr('INVALID_INK', () => rawSubmit('kim', rg.id, 1, sub, pick, path, -1));
+  await expectErr('INVALID_INK', () => rpc('kim', 'survivor_submit_case', rg.id, 1, sub, pick, path, 'NaN'));
+  await expectErr('STALE_POSITION', () => rawSubmit('kim', rg.id, 2, sub, pick, path, 40));
+  await expectErr('CONSTRAINT_NOT_ALLOWED', () => rawSubmit('kim', rg.id, 1, sub, st.run.proposals[0].id, path, 40));
+  await expectErr('INVALID_IMAGE', () => rawSubmit('kim', rg.id, 1, sub, pick, `${sv.kim}/${rg.id}/${crypto.randomUUID()}.png`, 40));
+  const ok = await rawSubmit('kim', rg.id, 1, sub, pick, path, 40);
+  const r = ok.state.run;
+  if (ok.outcome !== 'submitted' || r.reserve !== 95 || r.cases_done !== 1 || ok.game.cases_done !== 1) throw new Error(JSON.stringify(r));
+  const again = await rawSubmit('kim', rg.id, 1, sub, pick, path, 40);
+  if (again.outcome !== 'duplicate' || again.state.run.reserve !== 95) throw new Error('récompense versée deux fois');
+  if ((await row('select count(*)::int n from survivor_cases where game_id=$1', [rg.id])).n !== 1) throw new Error('case en double');
+  const c = await row('select ink_spent, ink_reward from survivor_cases where game_id=$1', [rg.id]);
+  if (Number(c.ink_spent) !== 40 || Number(c.ink_reward) !== 35) throw new Error(JSON.stringify(c));
+});
+await check('relay: les cases précédentes se lisent avec une simple réservation, pas de l’extérieur', async () => {
+  const l = gv(await rpc('leo', 'survivor_matchmake', 'relay'));
+  if (l.id !== rg.id) throw new Error('leo devait reprendre la BD la plus avancée');
+  const seen = await as(sv.leo, 'select position from survivor_cases where game_id=$1', [rg.id]);
+  const file = await as(sv.leo, "select name from storage.objects where bucket_id='survivor' and name like $1", [`${sv.kim}/%`]);
+  const out = await as(sv.mia, 'select position from survivor_cases where game_id=$1', [rg.id]);
+  const outFile = await as(sv.mia, "select name from storage.objects where bucket_id='survivor' and name like $1", [`${sv.kim}/%`]);
+  if (seen.length !== 1 || file.length !== 1 || out.length || outFile.length) throw new Error(`${seen.length}/${file.length}/${out.length}/${outFile.length}`);
+  const st = await state('leo', rg.id);
+  if (st.cases.length !== 1 || st.run.reserve !== 95) throw new Error('état hérité');
+});
+await check('relay: amélioration à la deuxième case, choisie par l’auteur avant de transmettre', async () => {
+  await turn('leo', rg.id, { finish: false });
+  const st = await state('leo', rg.id);
+  if (st.run.step !== 'upgrade' || st.run.offer.length !== 3 || new Set(st.run.offer).size !== 3 || st.run.upgrade_draws !== undefined) {
+    if (st.run.step !== 'upgrade' || st.run.offer.length !== 3) throw new Error(JSON.stringify(st.run));
+  }
+  const mia = gv(await rpc('mia', 'survivor_matchmake', 'relay'));
+  if (mia.id === rg.id) throw new Error('la suite a été réservée avant le choix de l’amélioration');
+  await expectErr('UPGRADE_PENDING', () => rpc('kim', 'survivor_choose_upgrade', rg.id, st.run.offer[0]));
+  await expectErr('UPGRADE_NOT_OFFERED', () => rpc('leo', 'survivor_choose_upgrade', rg.id, 'rien'));
+  const r = (await rpc('leo', 'survivor_choose_upgrade', rg.id, st.run.offer[0])).state.run;
+  if (r.step !== 'choosing' || r.proposals.length !== 3 || r.upgrades[st.run.offer[0]] !== 1) throw new Error(JSON.stringify(r));
+  if ((await rpc('leo', 'survivor_choose_upgrade', rg.id, st.run.offer[0])).outcome !== 'duplicate') throw new Error('amélioration appliquée deux fois');
+  await rpc('mia', 'survivor_abandon', mia.id);
+});
+await check('relay: si l’auteur n’a pas choisi, le joueur suivant le fait avant de dessiner', async () => {
+  await rpc('kim', 'survivor_reserve', rg.id);
+  await turn('kim', rg.id, { finish: false }); // case 3
+  await free();
+  await rpc('leo', 'survivor_reserve', rg.id);
+  await turn('leo', rg.id, { finish: false }); // case 4 → amélioration en attente
+  const before = await state('leo', rg.id);
+  if (before.run.step !== 'upgrade') throw new Error('attendu une amélioration');
+  const kim = await state('kim', rg.id).catch(() => null);
+  await db.query("update survivor_runs set upgrade_until = now() - interval '1 second' where game_id=$1 and user_id is null", [rg.id]);
+  await rpc('kim', 'survivor_reserve', rg.id);
+  const st = await state('kim', rg.id);
+  if (!st.acting || st.run.step !== 'upgrade') throw new Error(`${st.acting} ${st.run.step}`);
+  const after = (await rpc('kim', 'survivor_choose_upgrade', rg.id, st.run.offer[0])).state;
+  if (after.run.step !== 'choosing' || !after.acting) throw new Error('la BD est restée bloquée');
+  void kim;
+});
+await check('relay: 16 cases, réserve commune plafonnée, victoire collective', async () => {
+  let who = 'leo';
+  for (let i = 0; i < 12; i++) {
+    const st = await state('kim', rg.id);
+    if (st.run.reserve > st.run.capacity) throw new Error('réserve au-delà de la capacité');
+    await free();
+    if (st.game.cases_done >= 16) break;
+    const next = st.game.reservation_until ? 'kim' : who;
+    who = next === 'kim' ? 'leo' : 'kim';
+    await rpc(next, 'survivor_reserve', rg.id).catch(async () => { await rpc(who, 'survivor_reserve', rg.id); });
+    const holder = (await row('select user_id from survivor_reservations where game_id=$1 and not completed and expires_at > now()', [rg.id])).user_id;
+    await turn(holder === sv.kim ? 'kim' : 'leo', rg.id, { level: i % 3 });
+  }
+  const g = await row('select status, ended_reason, cases_done from survivor_games where id=$1', [rg.id]);
+  if (g.status !== 'finished' || g.ended_reason !== 'completed' || g.cases_done !== 16) throw new Error(JSON.stringify(g));
+  const st = await state('kim', rg.id);
+  if (st.run.outcome !== 'victory' || st.game.result !== 'victory' || st.cases.length !== 16) throw new Error(JSON.stringify(st.game.result));
+  if (new Set(st.cases.map((c) => c.constraint_id)).size !== 16) throw new Error('demande répétée');
+});
+
+await check('relay: défaite collective seulement si le détenteur de la case la déclare, sans secours', async () => {
+  const g = gv(await rpc('pam', 'survivor_matchmake', 'relay'));
+  await expectErr('NO_RESERVATION', () => rpc('ray', 'survivor_declare_stuck', g.id));
+  await db.query("update survivor_runs set emergency = 1 where game_id=$1", [g.id]).catch(() => undefined);
+  await state('pam', g.id);
+  await db.query("update survivor_runs set emergency = 1 where game_id=$1", [g.id]);
+  await expectErr('NOT_STUCK', () => rpc('pam', 'survivor_declare_stuck', g.id));
+  await db.query("update survivor_runs set emergency = 0 where game_id=$1", [g.id]);
+  const r = await rpc('pam', 'survivor_declare_stuck', g.id);
+  if (r.game.status !== 'finished' || r.game.result !== 'defeat' || r.game.ended_reason !== 'defeat') throw new Error(JSON.stringify(r.game));
+  if ((await rpc('pam', 'survivor_declare_stuck', g.id)).outcome !== 'duplicate') throw new Error('défaite non idempotente');
+});
+
+let dg;
+await check('duel: mêmes conditions et mêmes tirages, réserves individuelles', async () => {
+  dg = await pair('duel', 'noa', 'oli');
+  const a = await state('noa', dg), b = await state('oli', dg);
+  if (a.seed !== b.seed || JSON.stringify(a.run.proposals) !== JSON.stringify(b.run.proposals)) throw new Error('tirages différents');
+  await turn('noa', dg, { spent: 50, level: 1 });
+  await turn('oli', dg, { spent: 10, level: 1 });
+  const ra = await runOf('noa', dg), rb = await runOf('oli', dg);
+  if (ra.reserve === rb.reserve) throw new Error('réserves partagées');
+  // Même progression et mêmes choix: mêmes propositions et même offre d'amélioration.
+  const a2 = await state('noa', dg), b2 = await state('oli', dg);
+  if (a2.cases.every((c) => c.mine) === false) throw new Error('cases adverses visibles');
+});
+await check('duel: les tirages ne dépendent ni du nombre de Jokers ni de ce que fait l’adversaire', async () => {
+  const a = await runOf('noa', dg);
+  const g = await row('select seed from survivor_games where id=$1', [dg]);
+  const chosen = (await db.query('select array_agg(constraint_id) c from survivor_cases where game_id=$1 and bd_owner=$2', [dg, sv.noa])).rows[0].c;
+  const direct = (await db.query("select survivor_draw_proposals($1, 2, 16, $2::text[], '{}', '0') p", [g.seed, chosen])).rows[0].p;
+  if (JSON.stringify(direct) !== JSON.stringify(a.proposals.map((p) => p.id))) throw new Error('tirage non reproductible');
+  await db.query('update survivor_runs set jokers = 2 where game_id=$1 and user_id=$2', [dg, sv.noa]);
+  const j1 = (await rpc('noa', 'survivor_joker', dg, 0)).state.run;
+  await expectErr('STALE_STATE', () => rpc('noa', 'survivor_joker', dg, 5));
+  if ((await rpc('noa', 'survivor_joker', dg, 0)).outcome !== 'duplicate') throw new Error('Joker rejoué');
+  if (j1.jokers !== 1 || j1.joker_uses !== 1 || JSON.stringify(j1.proposals) === JSON.stringify(a.proposals)) throw new Error(JSON.stringify(j1));
+  const again = (await db.query("select survivor_draw_proposals($1, 2, 16, $2::text[], '{}', '0') p", [g.seed, chosen])).rows[0].p;
+  if (JSON.stringify(again) !== JSON.stringify(direct)) throw new Error('le tirage normal a bougé');
+  const joker = (await db.query("select survivor_draw_proposals($1, 2, 16, $2::text[], $3::text[], 'j1') p", [g.seed, chosen, a.proposals.map((p) => p.id)])).rows[0].p;
+  if (JSON.stringify(joker) !== JSON.stringify(j1.proposals.map((p) => p.id))) throw new Error('Joker non reproductible');
+});
+await check('duel: améliorations toutes les deux cases, identiques à progression égale', async () => {
+  const pa = await runOf('noa', dg), pb = await runOf('oli', dg);
+  await rpc('noa', 'survivor_pick', dg, pa.proposals[0].id);
+  await rpc('oli', 'survivor_pick', dg, pb.proposals[0].id);
+  await turn('noa', dg, { finish: false });
+  await turn('oli', dg, { finish: false });
+  const a = await runOf('noa', dg), b = await runOf('oli', dg);
+  if (a.step !== 'upgrade' || b.step !== 'upgrade' || JSON.stringify(a.offer) !== JSON.stringify(b.offer)) throw new Error(`${a.offer}/${b.offer}`);
+  await rpc('noa', 'survivor_choose_upgrade', dg, a.offer[0]);
+  await rpc('oli', 'survivor_choose_upgrade', dg, b.offer[1]);
+  const ra = await runOf('noa', dg), rb = await runOf('oli', dg);
+  if (ra.upgrades[a.offer[0]] !== 1 || rb.upgrades[b.offer[1]] !== 1 || ra.cases_done !== 2) throw new Error('améliorations');
+});
+await check('duel: effets des améliorations calculés par le serveur (Encrier, Régénération, Narrateur, Joker, Dernier souffle)', async () => {
+  const set = (u, offer, step = 'upgrade') => db.query('update survivor_runs set step=$3, offer=$4::jsonb where game_id=$1 and user_id=$2', [dg, sv[u], step, JSON.stringify(offer)]);
+  await db.query("update survivor_runs set reserve = 60, jokers = 0, emergency = 0, upgrades = '{}'::jsonb, capacity = 100 where game_id=$1 and user_id=$2", [dg, sv.noa]);
+  await set('noa', ['encrier']);
+  let r = (await rpc('noa', 'survivor_choose_upgrade', dg, 'encrier')).state.run;
+  if (r.capacity !== 125 || r.reserve !== 85) throw new Error(`encrier ${r.capacity}/${r.reserve}`);
+  await set('noa', ['joker']);
+  r = (await rpc('noa', 'survivor_choose_upgrade', dg, 'joker')).state.run;
+  await set('noa', ['souffle']);
+  r = (await rpc('noa', 'survivor_choose_upgrade', dg, 'souffle')).state.run;
+  if (r.jokers !== 2 || r.emergency !== 1) throw new Error(`charges ${r.jokers}/${r.emergency}`);
+  await set('noa', ['narrateur']);
+  await rpc('noa', 'survivor_choose_upgrade', dg, 'narrateur');
+  await set('noa', ['regeneration']);
+  await rpc('noa', 'survivor_choose_upgrade', dg, 'regeneration');
+  const st = await state('noa', dg);
+  if (st.run.proposals.map((p) => p.reward).join() !== '15,25,40') throw new Error(`récompenses ${st.run.proposals.map((p) => p.reward)}`);
+  const before = st.run.reserve;
+  const after = (await turn('noa', dg, { level: 0, spent: 10, finish: false })).state.run;
+  const expected = Math.min(125, before - 10 + 10 + 5 + 4);
+  if (after.reserve !== expected) throw new Error(`réserve ${after.reserve} ≠ ${expected}`);
+  const e = (await rpc('noa', 'survivor_use_emergency', dg, 0));
+  void e;
+});
+await check('duel: Dernier souffle ajoute 25 une fois, rejeu protégé, jamais sans charge', async () => {
+  await db.query("update survivor_runs set step='choosing', pick=null, emergency=1, emergency_uses=0, reserve=10, proposals='[]' where game_id=$1 and user_id=$2", [dg, sv.oli]);
+  await db.query("update survivor_runs set proposals = (select survivor_proposals_for(g, r, '{}', 'x') from survivor_games g, survivor_runs r where g.id=$1 and r.game_id=$1 and r.user_id=$2) where game_id=$1 and user_id=$2", [dg, sv.oli]);
+  const a = (await rpc('oli', 'survivor_use_emergency', dg, 0)).state.run;
+  if (a.reserve !== 35 || a.emergency !== 0) throw new Error(JSON.stringify(a));
+  if ((await rpc('oli', 'survivor_use_emergency', dg, 0)).outcome !== 'duplicate') throw new Error('rejeu');
+  await expectErr('NO_EMERGENCY', () => rpc('oli', 'survivor_use_emergency', dg, 1));
+});
+await check('duel: images adverses fermées au niveau du stockage jusqu’à la fin; dépôts contrôlés', async () => {
+  const mine = (await row("select image_path p from survivor_cases where game_id=$1 and bd_owner=$2 limit 1", [dg, sv.noa])).p;
+  const q = "select name from storage.objects where bucket_id='survivor' and name=$1";
+  if ((await as(sv.noa, q, [mine])).length !== 1 || (await as(sv.oli, q, [mine])).length !== 0 || (await as(sv.mia, q, [mine])).length !== 0) throw new Error('lecture');
+  const put = (u, name) => as(sv[u], "insert into storage.objects(bucket_id, name, owner, metadata) values ('survivor', $1, $2, '{}')", [name, sv[u]]);
+  const g = crypto.randomUUID();
+  await expectErr('row-level security', () => put('oli', `${sv.noa}/${dg}/${g}.png`));
+  await expectErr('row-level security', () => put('mia', `${sv.mia}/${dg}/${g}.png`));
+  await expectErr('row-level security', () => put('oli', `${sv.oli}/${dg}/pas-un-uuid.png`));
+  await expectErr('row-level security', () => put('oli', `${sv.oli}/${dg}/${g}.jpg`));
+  await put('oli', `${sv.oli}/${dg}/${g}.png`);
+  await expectErr('duplicate key', () => put('oli', `${sv.oli}/${dg}/${g}.png`).catch((e) => { throw new Error('duplicate key ' + e.message); }).then(() => { throw new Error('duplicate key'); }));
+  const upd = await as(sv.noa, "update storage.objects set name = name || 'x' where name = $1 returning name", [mine]);
+  const del = await as(sv.noa, 'delete from storage.objects where name = $1 returning name', [mine]);
+  if (upd.length || del.length) throw new Error('un dessin publié a été modifié');
+  await db.query("delete from storage.objects where name = $1", [`${sv.oli}/${dg}/${g}.png`]);
+});
+await check('duel: défaite individuelle, fin de partie et résultats des deux joueurs', async () => {
+  const mid = await state('oli', dg);
+  if (mid.runs.length !== 1) throw new Error('réserve adverse visible avant la fin');
+  await db.query("update survivor_runs set emergency=0, upgrades = upgrades - 'ami' where game_id=$1 and user_id=$2", [dg, sv.oli]);
+  await db.query("update survivor_runs set step='choosing', pick=null where game_id=$1 and user_id=$2", [dg, sv.oli]);
+  const lost = await rpc('oli', 'survivor_declare_stuck', dg);
+  if (lost.state.run.outcome !== 'defeat' || lost.game.status !== 'active') throw new Error('défaite individuelle');
+  for (let i = 0; i < 20 && (await runOf('noa', dg)).step !== 'finished'; i++) { await free(); await turn('noa', dg); }
+  const end = await state('noa', dg);
+  if (end.game.status !== 'finished' || end.runs.length !== 2 || end.runs.find((r) => !r.is_me).outcome !== 'defeat' || end.run.outcome !== 'victory') {
+    throw new Error(JSON.stringify(end.runs));
+  }
+  if (!end.runs.every((r) => r.upgrades)) throw new Error('performances incomplètes');
+  const theirs = await as(sv.noa, 'select position from survivor_cases where game_id=$1 and bd_owner=$2', [dg, sv.oli]);
+  if (theirs.length !== 2) throw new Error(`${theirs.length} cases adverses lisibles`);
+  const name = (await row("select image_path p from survivor_cases where game_id=$1 and bd_owner=$2 limit 1", [dg, sv.oli])).p;
+  if ((await as(sv.noa, "select name from storage.objects where bucket_id='survivor' and name=$1", [name])).length !== 1) throw new Error('image adverse fermée après la fin');
+});
+
+let bg, first, second;
+await check('battle: premier joueur tiré, demandes initiales, réserves de chacun visibles', async () => {
+  bg = await pair('battle', 'pam', 'ray');
+  first = (await row('select turn_player from survivor_games where id=$1', [bg])).turn_player === sv.pam ? 'pam' : 'ray';
+  second = first === 'pam' ? 'ray' : 'pam';
+  const a = await state(first, bg), b = await state(second, bg);
+  if (a.run.step !== 'choosing' || a.run.proposals.length !== 3 || !a.acting) throw new Error(JSON.stringify(a.run));
+  if (b.run.step !== 'waiting' || b.acting || b.run.proposals.length !== 0) throw new Error(JSON.stringify(b.run));
+  if (a.runs.length !== 2 || a.runs.find((r) => !r.is_me).reserve !== 100) throw new Error('réserve adverse invisible');
+});
+await check('battle: tour en trois temps, reprise après interruption, sans double récompense', async () => {
+  const t = await turn(first, bg, { level: 2, spent: 30, finish: false });
+  if (t.state.run.step !== 'demands' || t.state.run.reserve !== 100 || t.state.run.total_spent !== 30) throw new Error(JSON.stringify(t.state.run));
+  const dup = await rawSubmit(first, bg, 1, (await row('select submission_id s from survivor_cases where game_id=$1', [bg])).s, t.state.cases[0].constraint_id, t.state.cases[0].image_path, 30);
+  if (dup.outcome !== 'duplicate' || dup.state.run.reserve !== t.state.run.reserve) throw new Error('double récompense');
+  const resumed = await state(first, bg);
+  if (resumed.run.step !== 'demands' || !resumed.demand_options.easy.length || !resumed.demand_options.hard.length) throw new Error('reprise impossible');
+  const o = resumed.demand_options;
+  await expectErr('INVALID_DEMAND', () => rpc(first, 'survivor_set_demands', bg, [o.easy[0], o.hard[0], o.medium[0]]));
+  await expectErr('INVALID_DEMAND', () => rpc(first, 'survivor_set_demands', bg, [o.easy[0], o.medium[0]]));
+  await expectErr('INVALID_DEMAND', () => rpc(first, 'survivor_set_demands', bg, [o.easy[0], o.medium[0], '66']));
+  const before = await row('select turn_player, deadline_at from survivor_games where id=$1', [bg]);
+  await db.query("update survivor_games set deadline_at = now() + interval '1 hour' where id=$1", [bg]);
+  const ids = [o.easy[0], o.medium[0], o.hard[0]];
+  const passed = await rpc(first, 'survivor_set_demands', bg, ids);
+  const g = await row('select turn_player, deadline_at, now() n from survivor_games where id=$1', [bg]);
+  if (g.turn_player !== sv[second] || Math.abs((new Date(g.deadline_at) - new Date(g.n)) / 3.6e6 - 24) > 0.01 || before.turn_player !== sv[first]) throw new Error('tour non transmis');
+  if (passed.state.run.step !== 'waiting') throw new Error('étape');
+  if ((await rpc(first, 'survivor_set_demands', bg, ids)).outcome !== 'duplicate') throw new Error('demandes rejouées');
+  const b = await state(second, bg);
+  if (JSON.stringify(b.run.proposals.map((p) => p.id)) !== JSON.stringify(ids) || !b.acting) throw new Error('l’adversaire doit recevoir exactement ces demandes');
+  await expectErr('NOT_YOUR_TURN', () => rawSubmit(first, bg, 2, crypto.randomUUID(), ids[0], `${sv[first]}/${bg}/${crypto.randomUUID()}.png`, 0));
+  if (b.run.reserve !== 100) throw new Error('la réserve adverse a bougé');
+});
+await check('battle: le Joker remplace les propositions adverses; améliorations selon les cases personnelles', async () => {
+  await db.query('update survivor_runs set jokers = 1 where game_id=$1 and user_id=$2', [bg, sv[second]]);
+  const imposed = (await state(second, bg)).run.proposals.map((p) => p.id);
+  const j = (await rpc(second, 'survivor_joker', bg, 0)).state.run;
+  if (j.jokers !== 0 || JSON.stringify(j.proposals.map((p) => p.id)) === JSON.stringify(imposed)) throw new Error('Joker');
+  await free();
+  const t2 = await turn(second, bg, { finish: false });
+  if (t2.state.run.step !== 'demands') throw new Error('pas d’amélioration à la première case personnelle');
+  await rpc(second, 'survivor_set_demands', bg, [t2.state.demand_options.easy[0], t2.state.demand_options.medium[0], t2.state.demand_options.hard[0]]);
+  await free();
+  const t3 = await turn(first, bg, { finish: false });
+  if (t3.state.run.step !== 'upgrade') throw new Error(`amélioration attendue à la 2e case personnelle, reçu ${t3.state.run.step}`);
+  await settle(first, bg, await state(first, bg));
+});
+await check('battle: panne d’encre = défaite, victoire de l’adversaire', async () => {
+  const g2 = await pair('battle', 'kim', 'leo');
+  const f = (await row('select turn_player from survivor_games where id=$1', [g2])).turn_player === sv.kim ? 'kim' : 'leo';
+  const o = f === 'kim' ? 'leo' : 'kim';
+  await expectErr('NOT_YOUR_TURN', () => rpc(o, 'survivor_declare_stuck', g2));
+  const r = await rpc(f, 'survivor_declare_stuck', g2);
+  const w = await state(o, g2);
+  if (r.game.result !== 'loss' || w.game.result !== 'win' || w.game.status !== 'finished' || w.game.ended_reason !== 'defeat') throw new Error(`${r.game.result}/${w.game.result}`);
+});
+await check('battle: délai dépassé entre le dépôt et la transmission = forfait, cases conservées', async () => {
+  const g2 = await pair('battle', 'mia', 'sol');
+  const f = (await row('select turn_player from survivor_games where id=$1', [g2])).turn_player === sv.mia ? 'mia' : 'sol';
+  const o = f === 'mia' ? 'sol' : 'mia';
+  await turn(f, g2, { finish: false });
+  await db.query("update survivor_games set deadline_at = now() - interval '1 minute' where id=$1", [g2]);
+  const st = await state(o, g2);
+  if (st.game.status !== 'abandoned' || st.game.result !== 'win' || st.cases.length !== 1) throw new Error(JSON.stringify(st.game));
+  const late = await rpc(f, 'survivor_state', g2);
+  await expectErr('GAME_NOT_ACTIVE', () => rpc(f, 'survivor_set_demands', g2, ['16', '22', '11']));
+  if (late.game.result !== 'loss') throw new Error('forfait');
+});
+await check('battle: seize cases, égalité provisoire, aucune récompense en trop', async () => {
+  const g2 = await pair('battle', 'noa', 'pam');
+  let who = (await row('select turn_player from survivor_games where id=$1', [g2])).turn_player === sv.noa ? 'noa' : 'pam';
+  for (let i = 0; i < 16; i++) { await free(); await turn(who, g2, { level: i % 3 }); who = who === 'noa' ? 'pam' : 'noa'; }
+  const st = await state('noa', g2);
+  if (st.game.status !== 'finished' || st.game.result !== 'draw' || st.cases.length !== 16) throw new Error(JSON.stringify(st.game));
+  if (st.runs.some((r) => r.outcome !== 'victory' || r.cases_done !== 8)) throw new Error('survie des deux joueurs');
+  if (new Set(st.cases.map((c) => c.constraint_id)).size !== 16) throw new Error('demande répétée');
+});
+
+await check('stockage: fichier absent, trop gros, mauvais type ou d’une autre partie refusés; relance sans double case', async () => {
+  const g2 = await pair('duel', 'ray', 'sol');
+  const st = await state('ray', g2);
+  await rpc('ray', 'survivor_pick', g2, st.run.proposals[0].id);
+  const sub = crypto.randomUUID();
+  const path = `${sv.ray}/${g2}/${sub}.png`;
+  const pick = st.run.proposals[0].id;
+  await expectErr('IMAGE_MISSING', () => rawSubmit('ray', g2, 1, sub, pick, path, 5));
+  await upload('ray', g2, sub, { size: 999999, mimetype: 'image/png' });
+  await expectErr('INVALID_IMAGE', () => rawSubmit('ray', g2, 1, sub, pick, path, 5));
+  await db.query('delete from storage.objects where name=$1', [path]);
+  await upload('ray', g2, sub, { size: 500, mimetype: 'image/jpeg' });
+  await expectErr('INVALID_IMAGE', () => rawSubmit('ray', g2, 1, sub, pick, path, 5));
+  await db.query('delete from storage.objects where name=$1', [path]);
+  await upload('ray', g2, sub);
+  await expectErr('INVALID_IMAGE', () => rawSubmit('ray', g2, 1, sub, pick, `${sv.ray}/${dg}/${sub}.png`, 5));
+  await expectErr('INVALID_INK', () => rawSubmit('ray', g2, 1, sub, pick, path, 500));
+  const ok = await rawSubmit('ray', g2, 1, sub, pick, path, 5);
+  const retry = await rawSubmit('ray', g2, 1, sub, pick, path, 5);
+  if (ok.outcome !== 'submitted' || retry.outcome !== 'duplicate' || (await row('select count(*)::int n from survivor_cases where game_id=$1', [g2])).n !== 1) throw new Error('relance');
+});
+await check('stockage: fichiers orphelins mis en file de suppression, jamais les dessins publiés (purge armée seulement)', async () => {
+  await db.query("insert into storage.objects(bucket_id, name, owner, created_at, metadata) values ('survivor', $1, $2, now() - interval '3 days', '{}')", [`${sv.sol}/orphan/${crypto.randomUUID()}.png`, sv.sol]);
+  const before = (await row('select count(*)::int n from storage_deletions')).n;
+  await db.query('update purge_state set enabled = false');
+  if ((await row('select survivor_queue_orphans() n')).n !== 0) throw new Error('purge désarmée: rien à faire');
+  await db.query('update purge_state set enabled = true');
+  try {
+    const n = (await row("select survivor_queue_orphans(interval '1 day') n")).n;
+    const queued = (await db.query("select path from storage_deletions where bucket = 'survivor' and reason = 'orphan'")).rows;
+    const published = (await db.query("select image_path p from survivor_cases")).rows.map((r) => r.p);
+    if (n < 1 || queued.some((q) => published.includes(q.path)) || (await row('select count(*)::int n from storage_deletions')).n <= before) throw new Error(`${n}`);
+  } finally { await db.query('update purge_state set enabled = false'); }
+});
+await check('anti-abus: nombre d’appels limité; runs et règles internes inaccessibles aux clients', async () => {
+  await free();
+  const g = gv(await rpc('mia', 'survivor_matchmake', 'relay'));
+  let limited = false;
+  for (let i = 0; i < 125 && !limited; i++) { try { await state('mia', g.id); } catch (e) { limited = /RATE_LIMITED/.test(e.message); if (!limited) throw e; } }
+  if (!limited) throw new Error('aucune limite');
+  await free();
+  if ((await as(sv.mia, 'select * from survivor_runs')).length !== 0) throw new Error('runs lisibles');
+  if ((await as(sv.mia, 'select * from survivor_constraints')).length !== 0) throw new Error('banque lisible');
+  for (const f of [`survivor_ensure_run('${g.id}'::uuid, '${sv.mia}'::uuid)`, `survivor_state_json('${g.id}'::uuid, '${sv.mia}'::uuid)`, `survivor_hit('${sv.mia}'::uuid, 'x', 1, 1)`]) {
+    await expectErr('permission denied', () => as(sv.mia, `select ${f}`));
+  }
+  await rpc('mia', 'survivor_abandon', g.id);
 });
 
 console.log(results.join('\n'));

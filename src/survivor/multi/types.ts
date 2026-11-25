@@ -28,7 +28,12 @@ export interface GameView {
   cases_done: number;
   created_at: string;
   deadline_at: string | null;
-  ended_reason: 'completed' | 'forfeit' | 'expired' | 'cancelled' | null;
+  ended_reason: 'completed' | 'forfeit' | 'expired' | 'cancelled' | 'defeat' | null;
+  /** Issue de la partie vue par le joueur (calculée par le serveur). */
+  result: 'victory' | 'defeat' | 'win' | 'loss' | 'draw' | 'completed' | 'expired' | 'cancelled' | null;
+  /** Ma réserve d'encre (commune en Relay) et sa capacité, quand la partie a commencé. */
+  reserve: number | null;
+  capacity: number | null;
   /** Délai restant (Duel/Battle: partie ou tour; Relay: ma réservation), au moment de la lecture. */
   seconds_left: number | null;
   bucket: Bucket;
@@ -44,7 +49,7 @@ export interface GameView {
   players: PlayerView[];
 }
 
-export type Outcome = 'created' | 'joined' | 'searching' | 'reserved' | 'extended' | 'released' | 'cancelled' | 'abandoned' | 'submitted' | 'duplicate';
+export type Outcome = 'created' | 'joined' | 'searching' | 'reserved' | 'extended' | 'released' | 'cancelled' | 'abandoned' | 'submitted' | 'duplicate' | 'picked' | 'joker' | 'emergency' | 'upgraded' | 'turn_passed' | 'defeat';
 
 export interface GameResult {
   outcome: Outcome;
@@ -60,15 +65,98 @@ export interface InvitePeek {
   available: boolean;
 }
 
-/** Ce que l'étape suivante enverra pour déposer une case terminée (le dessin multijoueur n'est pas encore branché). */
+export type Level = 'easy' | 'medium' | 'hard';
+export type RunStep = 'choosing' | 'upgrade' | 'demands' | 'waiting' | 'finished';
+
+export interface MpProposal {
+  id: string;
+  level: Level;
+  /** Encre gagnée en terminant la case, bonus des améliorations compris (calculée par le serveur). */
+  reward: number;
+}
+
+/** Ma réserve d'encre et ma progression (la run est commune en Relay). */
+export interface MpRun {
+  step: RunStep;
+  /** Position de la prochaine case que je dépose. */
+  position: number;
+  reserve: number;
+  capacity: number;
+  upgrades: Record<string, number>;
+  jokers: number;
+  emergency: number;
+  joker_uses: number;
+  emergency_uses: number;
+  total_spent: number;
+  cases_done: number;
+  proposals: MpProposal[];
+  pick: string | null;
+  offer: string[];
+  upgrade_until: string | null;
+  outcome: 'victory' | 'defeat' | null;
+  free_mimos: number;
+}
+
+export interface MpRunSummary {
+  nickname: string | null;
+  is_me: boolean;
+  shared: boolean;
+  step: RunStep | null;
+  reserve: number;
+  capacity: number;
+  cases_done: number;
+  total_spent: number;
+  upgrades: Record<string, number> | null;
+  outcome: 'victory' | 'defeat' | null;
+}
+
+export interface MpCase {
+  position: number;
+  author_id: string;
+  nickname: string;
+  constraint_id: string;
+  image_path: string;
+  ink_spent: number;
+  reward: number;
+  /** Duel: propriétaire de la BD; nul quand la BD est commune. */
+  bd_owner: string | null;
+  mine: boolean;
+}
+
+/** Tout ce que l'interface sait d'une partie multijoueur (`survivor_state`): jamais de calcul de règles côté client. */
+export interface MpState {
+  game: GameView;
+  /** Seed en texte: aucune perte de précision entre PostgreSQL et JavaScript. */
+  seed: string;
+  /** C'est à moi d'agir à l'étape en cours. */
+  acting: boolean;
+  cases: MpCase[];
+  runs: MpRunSummary[];
+  demand_options: Record<Level, string[]> | null;
+  upgrade_wait_seconds: number | null;
+  run: MpRun | null;
+}
+
+export interface MpResult {
+  outcome: Outcome;
+  game: GameView;
+  state: MpState;
+}
+
+/** Ce que l'interface envoie pour déposer une case terminée; le serveur calcule récompense, améliorations et transitions. */
 export interface SubmitCaseInput {
   gameId: string;
+  position: number;
+  /** Identifiant de cette tentative: le même après un échec réseau, un nouveau si le dessin a changé. */
+  submissionId: string;
   constraintId: string;
-  /** Chemin de l'image, préfixé par l'identifiant du joueur. */
   imagePath: string;
+  /** Encre dépensée selon l'éditeur local (non vérifiable par le serveur, seulement bornée par la réserve). */
   inkSpent: number;
-  inkReward: number;
 }
+
+/** Chemin de stockage d'une case: <joueur>/<partie>/<soumission>.png (même format que la politique SQL). */
+export const casePath = (userId: string, gameId: string, submissionId: string) => `${userId}/${gameId}/${submissionId}.png`;
 
 export const MODE_LABELS: Record<MultiMode, string> = { relay: 'Relay', duel: 'Duel', battle: 'Battle' };
 
@@ -76,6 +164,15 @@ export const MODE_BLURBS: Record<MultiMode, string> = {
   relay: 'Une BD commune, passée de joueur en joueur.',
   duel: 'Deux BD identiques, dessinées chacune de son côté.',
   battle: 'Une BD à deux, dessinée à tour de rôle.',
+};
+
+export const RESULT_LABELS: Record<string, string> = {
+  victory: 'Victoire collective: la BD est terminée',
+  defeat: 'Défaite: panne d’encre',
+  win: 'Victoire: ton adversaire est tombé en panne d’encre',
+  loss: 'Défaite: panne d’encre',
+  draw: 'Égalité provisoire: les deux joueurs ont survécu',
+  completed: 'Terminée',
 };
 
 export const BUCKET_LABELS: Record<Bucket, string> = { mine: 'À toi de jouer', waiting: 'En attente des autres', done: 'Parties terminées' };
@@ -98,7 +195,7 @@ export function describeGame(g: GameView): string {
     case 'cancelled':
       return 'Défi annulé';
     case 'finished':
-      return 'Terminée';
+      return RESULT_LABELS[g.result ?? 'completed'] ?? 'Terminée';
     case 'abandoned':
       if (g.ended_reason === 'expired') return 'Délai dépassé: partie abandonnée';
       return g.forfeit_by_me ? 'Abandonnée par toi (forfait)' : 'Forfait de l’adversaire';

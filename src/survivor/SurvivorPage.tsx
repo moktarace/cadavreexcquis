@@ -5,7 +5,7 @@ import { indexedToRgba } from '../editor/render';
 import { EditorSession } from '../editor/session';
 import { EditorWorkspace } from '../editor/ui/EditorWorkspace';
 import { PageFrame } from '../pages/shared';
-import { PixelIcon, ToyButton, ToyCard, ToyDialog } from '../ui';
+import { ToyButton, ToyCard, ToyDialog } from '../ui';
 import { SURVIVOR } from './config';
 import { LEVELS, LEVEL_LABELS, constraintById, diceOf } from './constraints';
 import { exportSurvivorPng } from './exportSheet';
@@ -13,7 +13,8 @@ import { SurvivorGame, type CaseGain } from './game';
 import { clearRun, loadRun, saveRun } from './storage';
 import { InviteView, MultiLab } from './multi/MultiLab';
 import { MODE_BLURBS, MODE_LABELS, type MultiMode } from './multi/types';
-import { UPGRADES, upgradeById } from './upgrades';
+import { InkGauge, UpgradeChoice } from './parts';
+import { UPGRADES } from './upgrades';
 import './survivor.css';
 
 /** Mode expérimental (#/lab/survivor): une BD de 16 cases à finir avant d'être à court d'encre. Hors ligne, sans compte. */
@@ -120,18 +121,6 @@ function PixelThumb({ pixels, label }: { pixels: Uint8Array; label: string }) {
     ref.current!.getContext('2d')!.putImageData(new ImageData(indexedToRgba(pixels) as Uint8ClampedArray<ArrayBuffer>, WIDTH, HEIGHT), 0, 0);
   }, [pixels]);
   return <canvas ref={ref} className="sv-thumb" width={WIDTH} height={HEIGHT} role="img" aria-label={label} />;
-}
-
-function InkGauge({ left, capacity, pending }: { left: number; capacity: number; pending: number }) {
-  const pct = (v: number) => `${Math.max(0, Math.min(100, (v / capacity) * 100))}%`;
-  const ghost = Math.min(pending, Math.max(0, left));
-  return (
-    <div className="sv-gauge" role="meter" aria-label="Encre restante" aria-valuemin={0} aria-valuemax={capacity} aria-valuenow={Math.max(0, Math.round(left))}>
-      <div className="sv-gauge__fill" style={{ width: pct(left - ghost) }} />
-      {ghost > 0 && <div className="sv-gauge__ghost" style={{ width: pct(ghost) }} />}
-      <span className="sv-gauge__text">Encre {Math.max(0, Math.ceil(left))} / {capacity}{pending > 0 ? ` · −${Math.ceil(pending)}` : ''}</span>
-    </div>
-  );
 }
 
 // ───────────── Une case ─────────────
@@ -269,24 +258,7 @@ function UpgradeView({ game, onPick }: { game: SurvivorGame; onPick: (id: string
     <div className="app-shell">
       <main>
         <PageFrame title="Une amélioration !" subtitle={`Après la case ${s.caseNo} · encre ${Math.ceil(s.reserve)} / ${game.capacity}`} tone="yellow" right={<span />}>
-          <div className="sv-offer">
-            {s.offer.map((id) => {
-              const def = upgradeById(id)!;
-              const owned = s.upgrades[id] ?? 0;
-              return (
-                <ToyCard key={id} tone="lavender">
-                  <div className="sv-upgrade">
-                    <PixelIcon name={def.icon} size={36} />
-                    <div>
-                      <p className="plain-text"><strong>{def.name}</strong>{owned > 0 && <span className="hint"> · déjà ×{owned}</span>}</p>
-                      <p className="hint">{def.text}</p>
-                    </div>
-                  </div>
-                  <ToyButton variant="primary" icon="check" onClick={() => onPick(id)}>Prendre</ToyButton>
-                </ToyCard>
-              );
-            })}
-          </div>
+          <UpgradeChoice offer={s.offer} owned={s.upgrades} onPick={onPick} />
         </PageFrame>
       </main>
     </div>

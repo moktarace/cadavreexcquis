@@ -6,7 +6,10 @@ const MARGIN = 8;
 const HEAD = 40;
 
 /** Planche 4 × 4 des cases terminées, à la résolution réelle (320 × 240 par case), avec un bandeau titre. */
-export async function survivorSheetPng(cases: readonly Uint8Array[], title: string): Promise<Blob> {
+/** Une case est soit des pixels indexés (Solo), soit une image déjà décodée (multijoueur). */
+export type SheetCase = Uint8Array | CanvasImageSource | undefined;
+
+export async function survivorSheetPng(cases: readonly SheetCase[], title: string): Promise<Blob> {
   const cols = 4;
   const rows = Math.ceil(SURVIVOR.totalCases / cols);
   const canvas = document.createElement('canvas');
@@ -29,9 +32,12 @@ export async function survivorSheetPng(cases: readonly Uint8Array[], title: stri
     const y = HEAD + MARGIN + Math.floor(i / cols) * (HEIGHT + MARGIN);
     ctx.fillStyle = '#fff';
     ctx.fillRect(x, y, WIDTH, HEIGHT);
-    if (cases[i]) {
-      tctx.putImageData(new ImageData(indexedToRgba(cases[i]) as Uint8ClampedArray<ArrayBuffer>, WIDTH, HEIGHT), 0, 0);
+    const c = cases[i];
+    if (c instanceof Uint8Array) {
+      tctx.putImageData(new ImageData(indexedToRgba(c) as Uint8ClampedArray<ArrayBuffer>, WIDTH, HEIGHT), 0, 0);
       ctx.drawImage(tile, x, y);
+    } else if (c) {
+      ctx.drawImage(c, x, y, WIDTH, HEIGHT);
     }
     ctx.strokeStyle = '#3b2a63';
     ctx.lineWidth = 2;
@@ -42,11 +48,11 @@ export async function survivorSheetPng(cases: readonly Uint8Array[], title: stri
   return blob;
 }
 
-export async function exportSurvivorPng(cases: readonly Uint8Array[], title: string) {
+export async function exportSurvivorPng(cases: readonly SheetCase[], title: string, filename = 'survivor-bd.png') {
   const url = URL.createObjectURL(await survivorSheetPng(cases, title));
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'survivor-bd.png';
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
