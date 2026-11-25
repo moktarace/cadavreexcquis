@@ -2352,4 +2352,122 @@ await check('récompenses d’arbitrage et solde préservés; solde = somme du r
   if (gains < 10) throw new Error('récompenses d’arbitrage');
 });
 
+
+// ───────────── Survivor activité (0017) ─────────────
+for (const nme of ['ac1', 'ac2', 'ac3', 'ac4', 'ac5', 'ac6']) {
+  const [{ id }] = (await db.query('insert into auth.users default values returning id')).rows;
+  sv[nme] = id;
+}
+const act = async (u) => { await db.query('delete from survivor_rate_limits'); return rpc(u, 'survivor_activity'); };
+const closeAll = async () => {
+  await db.query("update survivor_games set status='cancelled', ended_reason='cancelled', finished_at=now() where status='searching'");
+  await db.query("update survivor_games set status='abandoned', ended_reason='expired', finished_at=now() where status='active'");
+};
+await check('activité: adversaire trouvé, invitation acceptée, nouveau tour et issue, chacun pour le bon joueur', async () => {
+  await closeAll();
+  const inv = await pair('duel', 'ac1', 'ac2');
+  const ch = gv(await rpc('ac1', 'survivor_create_challenge', 'battle', 'open'));
+  const joined = gv(await rpc('ac2', 'survivor_matchmake', 'battle'));
+  if (joined.id !== ch.id) throw new Error('appariement');
+  const a1 = await act('ac1'); const a2 = await act('ac2');
+  if (!a1.events.some((e) => e.kind === 'invite_accepted' && e.game_id === inv)) throw new Error('invitation: ' + JSON.stringify(a1.events));
+  if (!a1.events.some((e) => e.kind === 'match_found' && e.game_id === ch.id)) throw new Error('adversaire trouvé');
+  if (a2.events.some((e) => e.kind === 'match_found' || e.kind === 'invite_accepted')) throw new Error('événement du créateur vu par celui qui a rejoint');
+  const turnOwner = (await row('select turn_player t from survivor_games where id=$1', [ch.id])).t;
+  const who = turnOwner === sv.ac1 ? [a1, a2] : [a2, a1];
+  if (!who[0].events.some((e) => e.kind === 'turn' && e.game_id === ch.id) || who[1].events.some((e) => e.kind === 'turn')) throw new Error('tour');
+  await rpc('ac2', 'survivor_abandon', ch.id);
+  const r1 = (await act('ac1')).events.find((e) => e.kind === 'game_done' && e.game_id === ch.id);
+  const r2 = (await act('ac2')).events.find((e) => e.kind === 'game_done' && e.game_id === ch.id);
+  if (r1?.result !== 'win' || r2?.result !== 'loss') throw new Error(JSON.stringify([r1, r2]));
+  if ((await act('ac1')).events.some((e) => e.kind === 'turn')) throw new Error('tour périmé après la fin');
+  await rpc('ac1', 'survivor_abandon', inv);
+});
+await check('activité: relecture sans doublon (événements dérivés), lu/non lu par repère, jamais en arrière', async () => {
+  const a = await act('ac1'); const b = await act('ac1');
+  if (JSON.stringify(a.events) !== JSON.stringify(b.events)) throw new Error('relecture différente');
+  if (new Set(a.events.map((e) => e.key)).size !== a.events.length) throw new Error('doublon');
+  if (a.unread !== a.events.length || a.unread === 0) throw new Error('tout est non lu au départ: ' + a.unread);
+  await db.query('delete from survivor_rate_limits');
+  await rpc('ac1', 'survivor_activity_read', a.now);
+  const c = await act('ac1');
+  if (c.unread !== 0) throw new Error('non lu après lecture: ' + c.unread);
+  await rpc('ac1', 'survivor_activity_read', '2000-01-01T00:00:00Z');
+  if ((await act('ac1')).unread !== 0) throw new Error('le repère recule');
+  await rpc('ac1', 'survivor_activity_read', new Date(Date.now() + 86400000).toISOString());
+  const until = (await row('select read_until from survivor_activity_reads where user_id=$1', [sv.ac1])).read_until;
+  if (until.getTime() > Date.now() + 5000) throw new Error('repère dans le futur');
+  await new Promise((r) => setTimeout(r, 30)); // l'horloge de PGlite est à la milliseconde
+  const g = gv(await rpc('ac1', 'survivor_create_challenge', 'battle', 'invite'));
+  await rpc('ac2', 'survivor_accept_invite', g.invite_token);
+  const d = await act('ac1');
+  if (d.unread < 1 || !d.events.some((e) => e.kind === 'invite_accepted' && e.game_id === g.id)) throw new Error('nouvel événement non lu: ' + d.unread);
+  await rpc('ac1', 'survivor_abandon', g.id);
+});
+await check('activité: arbitrages reçus regroupés par BD, encre bonus, anonymat des arbitres', async () => {
+  const { bd } = await soloBd('ac3', 4, 'Activité');
+  const restore = await isolate([bd]);
+  const got = [];
+  for (const u of ['ac4', 'ac5']) {
+    const a = (await arbNext(u)).arbitration;
+    await voteAll(u, a, (c, i) => (i % 2 ? 'down' : 'up'));
+    await finishArb(u, a.id);
+    got.push(a.id);
+  }
+  await restore();
+  const ev = (await act('ac3')).events.find((e) => e.kind === 'bd_judged' && e.bd_id === bd);
+  if (!ev || ev.count !== 2 || ev.ups !== 4 || ev.amount !== 4 * 5) throw new Error(JSON.stringify(ev));
+  if ((await act('ac3')).events.filter((e) => e.kind === 'bd_judged').length !== 1) throw new Error('non regroupé');
+  const flat = JSON.stringify(await act('ac3'));
+  for (const u of ['ac4', 'ac5']) if (flat.includes(sv[u]) || flat.includes('arbiter')) throw new Error('identité d’arbitre exposée');
+  const mine4 = (await act('ac4')).events.find((e) => e.kind === 'arbitration_done');
+  if (!mine4 || mine4.amount !== 4 * 2 + 10 || mine4.theme !== 'Activité') throw new Error(JSON.stringify(mine4));
+  if ((await act('ac4')).events.some((e) => e.kind === 'bd_judged')) throw new Error('événement de l’auteur chez l’arbitre');
+  if ((await act('ac6')).events.length !== 0) throw new Error('activité chez un inconnu');
+});
+await check('activité: demande de consentement tant qu’elle attend, puis plus', async () => {
+  const g = await relayBd('ac1', 'ac2');
+  await rpc('ac1', 'survivor_submit_game_bd', g);
+  const ev = (await act('ac2')).events.find((e) => e.kind === 'consent_request');
+  if (!ev || !ev.bd_id) throw new Error('demande absente');
+  if ((await act('ac1')).events.some((e) => e.kind === 'consent_request')) throw new Error('demande chez celui qui l’a faite');
+  await db.query('delete from survivor_rate_limits');
+  await rpc('ac2', 'survivor_consent', ev.bd_id, true);
+  if ((await act('ac2')).events.some((e) => e.kind === 'consent_request')) throw new Error('demande répondue encore affichée');
+  const done = (await act('ac2')).events.find((e) => e.kind === 'game_done' && e.game_id === g);
+  if (!done) throw new Error('BD collective terminée');
+});
+await check('activité: tours disponibles réels (Relay, Duel, Battle), jamais ses propres défis; tables fermées', async () => {
+  await closeAll();
+  const none = (await act('ac6')).open;
+  if (none.relay !== 0 || none.duel !== 0 || none.battle !== 0) throw new Error(JSON.stringify(none));
+  await rpc('ac5', 'survivor_create_challenge', 'duel', 'open');
+  await rpc('ac5', 'survivor_create_challenge', 'battle', 'open');
+  const g = gv(await rpc('ac5', 'survivor_matchmake', 'relay'));
+  const seen = (await act('ac6')).open;
+  if (seen.duel !== 1 || seen.battle !== 1 || seen.relay < 0) throw new Error(JSON.stringify(seen));
+  const own = (await act('ac5')).open;
+  if (own.duel !== 0 || own.battle !== 0) throw new Error('ses propres défis comptés: ' + JSON.stringify(own));
+  await db.query('delete from survivor_rate_limits');
+  if ((await as(sv.ac1, 'select * from survivor_activity_reads').catch(() => [])).length !== 0) throw new Error('repères lisibles directement');
+  await expectErr('permission denied', () => as(null, 'select survivor_activity()'));
+  void g;
+});
+
+await check('miniatures: première case lisible seulement; en Duel en cours, jamais celle de l’adversaire', async () => {
+  await closeAll();
+  const g = await pair('duel', 'ac1', 'ac2');
+  const t1 = await turn('ac1', g, { finish: false });
+  const thumbs = (u, ids) => rpc(u, 'survivor_game_thumbs', ids);
+  const a = await thumbs('ac1', [g]);
+  if (a.length !== 1 || !a[0].image_path.startsWith(sv.ac1)) throw new Error('ma miniature: ' + JSON.stringify(a));
+  if ((await thumbs('ac2', [g])).length !== 0) throw new Error('la BD de l’adversaire est visible en cours de Duel');
+  if ((await thumbs('ac6', [g])).length !== 0) throw new Error('un inconnu voit une miniature');
+  await rpc('ac2', 'survivor_abandon', g);
+  const after = await thumbs('ac2', [g]);
+  if (after.length !== 1 || !after[0].image_path.startsWith(sv.ac1)) throw new Error('BD terminée lisible: ' + JSON.stringify(after));
+  await expectErr('permission denied', () => as(null, 'select survivor_game_thumbs($1)', [[g]]));
+  void t1;
+});
+
 console.log(results.join('\n'));

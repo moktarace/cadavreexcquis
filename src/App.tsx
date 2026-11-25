@@ -81,14 +81,6 @@ function Screens() {
   const { hasUnread } = useReplies();
   const rewards = useRewards();
 
-  if (route.name === 'survivor') {
-    return (
-      <Suspense fallback={null}>
-        <SurvivorPage invite={route.invite ?? null} />
-      </Suspense>
-    );
-  }
-
   return route.name === 'draw' ? (
     <EditorScreen key={route.parentId ?? 'root'} parentId={route.parentId} />
   ) : (
@@ -107,6 +99,15 @@ function Screens() {
 }
 
 export function App() {
+  const route = useRoute();
+  // Survivor vit hors des fournisseurs du jeu classique: ils ouvrent un compte anonyme au chargement, et le Solo n'en veut pas.
+  if (route.name === 'survivor') {
+    return (
+      <Suspense fallback={null}>
+        <SurvivorPage invite={route.invite ?? null} />
+      </Suspense>
+    );
+  }
   return (
     <GameProvider>
       <RepliesProvider>

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react';
-import { hrefOf } from '../../app/router';
 import { PageFrame } from '../../pages/shared';
 import { PixelIcon, ToyButton, ToyCard } from '../../ui';
 import { constraintById, diceOf } from '../constraints';
@@ -50,7 +49,7 @@ export function ArbiterPage({ onBack }: { onBack: () => void }) {
   const start = () =>
     run(arbitrateNext, (r: ArbResult) => {
       if (r.arbitration) setView({ kind: 'arbitration', arb: r.arbitration });
-      else setNotice('Aucune BD à arbitrer pour le moment: reviens plus tard.');
+      else setNotice('Aucune BD à arbitrer pour le moment. Les BD arrivent quand d’autres joueurs en soumettent: reviens plus tard, ou soumets la tienne depuis l’écran de fin d’une partie.');
     });
   const back = () => {
     setView({ kind: 'hub' });
@@ -63,7 +62,7 @@ export function ArbiterPage({ onBack }: { onBack: () => void }) {
   if (view.kind === 'done') {
     const { arb, closed } = view;
     return (
-      <Shell title="Arbitrage terminé" subtitle={`« ${arb.theme} »`}>
+      <Shell title="Arbitrage terminé" subtitle={`« ${arb.theme} »`} onBack={back}>
         <ToyCard tone={closed ? 'yellow' : 'green'}>
           {closed ? (
             <p className="plain-text"><strong>Cette BD a déjà reçu tous ses arbitrages</strong>: aucun gain, merci d’avoir lu.</p>
@@ -78,14 +77,14 @@ export function ArbiterPage({ onBack }: { onBack: () => void }) {
         {notice && <p className="sv-notice sv-notice--error" role="alert">{notice}</p>}
         <div className="row-buttons">
           <ToyButton variant="primary" icon="play" disabled={busy} onClick={() => void start()}>Arbitrer une autre BD</ToyButton>
-          <ToyButton variant="ghost" icon="back" onClick={back}>Retour</ToyButton>
+          <ToyButton variant="ghost" icon="back" onClick={back}>Retour à l’arbitre</ToyButton>
         </div>
       </Shell>
     );
   }
 
   return (
-    <Shell title="Arbitre" subtitle="Lis les BD des autres et juge les contraintes">
+    <Shell title="Arbitre" subtitle="Lis les BD des autres et juge les contraintes" onBack={onBack}>
       <ToyCard tone="yellow">
         <p className="plain-text"><BonusPill balance={wallet?.balance ?? hub?.balance ?? 0} /></p>
         <p className="hint">Juge la contrainte, pas le talent du dessinateur. Un dessin rudimentaire, un Mimo ou une interprétation drôle sont valables s’ils répondent à la contrainte.</p>
@@ -102,11 +101,14 @@ export function ArbiterPage({ onBack }: { onBack: () => void }) {
               ) : (
                 <ToyButton variant="primary" icon="play" disabled={busy || hub.available === 0 || hub.daily_done >= hub.daily_limit} onClick={() => void start()}>Arbitrer une BD</ToyButton>
               )}
-              <ToyButton variant="ghost" icon="back" onClick={onBack}>Menu</ToyButton>
+              <ToyButton variant="ghost" icon="back" onClick={onBack}>Accueil</ToyButton>
             </div>
+            {hub.consents.length > 0 && <p className="hint"><strong>{hub.consents.length} demande{hub.consents.length > 1 ? 's' : ''} d’arbitrage à traiter</strong>, plus bas.</p>}
+            {hub.available === 0 && !hub.active && <p className="hint">Aucune BD à juger pour l’instant: reviens plus tard.</p>}
+            {hub.daily_done >= hub.daily_limit && <p className="hint">Limite du jour atteinte: reviens demain pour arbitrer encore.</p>}
           </>
         )}
-        {!hub && <div className="row-buttons"><ToyButton variant="ghost" icon="back" onClick={onBack}>Menu</ToyButton></div>}
+        {!hub && <div className="row-buttons"><ToyButton variant="ghost" icon="back" onClick={onBack}>Accueil</ToyButton></div>}
         {notice && <p className="sv-notice sv-notice--error" role="alert">{notice}</p>}
       </ToyCard>
 
@@ -174,11 +176,11 @@ export function ArbiterPage({ onBack }: { onBack: () => void }) {
   );
 }
 
-function Shell({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+function Shell({ title, subtitle, onBack, children }: { title: string; subtitle?: string; onBack: () => void; children: React.ReactNode }) {
   return (
     <div className="app-shell">
       <main>
-        <PageFrame title={title} subtitle={subtitle} backHref={hrefOf({ name: 'home' })} tone="lavender" right={<span />}>
+        <PageFrame title={title} subtitle={subtitle} tone="lavender" right={<ToyButton variant="soft" size="s" iconOnly icon="back" aria-label="Retour" onClick={onBack} />}>
           {children}
         </PageFrame>
       </main>
@@ -226,7 +228,7 @@ function Judging({ arb, onChange, onDone, onLeave }: { arb: Arbitration; onChang
   const flag = (category: FlagCategory) => guard(async () => { await flagArbitration(arb.id, bd.slot, category); onLeave(); });
 
   return (
-    <Shell title="Arbitrage" subtitle={`« ${arb.theme} » · ${arb.voted}/${arb.total} cases jugées`}>
+    <Shell title="Arbitrage" subtitle={`« ${arb.theme} » · ${arb.voted}/${arb.total} cases jugées`} onBack={onLeave}>
       <p className="sv-lead">Juge la contrainte, pas le talent du dessinateur.</p>
       <div className="sv-arb__progress" role="progressbar" aria-valuemin={0} aria-valuemax={arb.total} aria-valuenow={arb.voted}>
         <div className="sv-arb__bar" style={{ width: `${(arb.voted / arb.total) * 100}%` }} />

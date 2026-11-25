@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { hrefOf } from '../../app/router';
 import { previewPng } from '../../editor/export';
 import { EditorSession } from '../../editor/session';
 import { EditorWorkspace } from '../../editor/ui/EditorWorkspace';
 import { PageFrame } from '../../pages/shared';
-import { ToyButton, ToyCard } from '../../ui';
+import { ToyButton, ToyCard, ToyDialog } from '../../ui';
 import { SURVIVOR } from '../config';
 import { LEVELS, LEVEL_LABELS, PHASE_LABELS, constraintById, diceOf, phaseOf } from '../constraints';
 import { exportSurvivorPng } from '../exportSheet';
 import { nonWhite, stuckNow } from '../game';
 import { duelVerdict, submitGameBd } from '../arbiter/api';
 import { NARRATIVE_LABELS, type NarrativeResult } from '../arbiter/types';
+import { ContextHint, NextActions, type AfterActions } from '../home/parts';
+import { matchState } from '../home/types';
 import { InkGauge, UpgradeChoice } from '../parts';
 import { buyItem, type ShopInfo } from '../shop/api';
 import { BonusPill, ShopOffer, useShop } from '../shop/ShopOffer';
@@ -27,8 +28,14 @@ const EXTEND_EVERY_MS = 4 * 60_000;
 /** Consommables d'une partie en équipe: le serveur débite l'acheteur seul et renvoie l'état confirmé. */
 type Offer = (item: ShopItem, available?: boolean) => React.ReactNode;
 
-export function MultiPlay({ gameId, onBack, onNext }: { gameId: string; onBack: () => void; onNext?: () => void }) {
+export function MultiPlay({ gameId, onBack, after, onChanged }: { gameId: string; onBack: () => void; after: AfterActions; onChanged: () => void }) {
   const [st, setSt] = useState<MpState | null>(null);
+  const [flash, setFlash] = useState<string | null>(null);
+  useEffect(() => {
+    if (!flash) return;
+    const t = setTimeout(() => setFlash(null), 1800);
+    return () => clearTimeout(t);
+  }, [flash]);
   const shop = useShop('game', gameId);
   const offer: Offer = (item, available = true) => (
     <ShopOffer
@@ -61,6 +68,7 @@ export function MultiPlay({ gameId, onBack, onNext }: { gameId: string; onBack: 
     try {
       setSt((await action()).state);
       setError(null);
+      onChanged();
     } catch (e) {
       const fresh = await fetchState(gameId).catch(() => null);
       if (fresh) setSt(fresh);
@@ -82,9 +90,10 @@ export function MultiPlay({ gameId, onBack, onNext }: { gameId: string; onBack: 
   const run = st.run;
   const ended = g.status !== 'searching' && g.status !== 'active';
 
-  if (ended) return <Finished st={st} onBack={onBack} onNext={onNext} />;
-  if (!st.acting || !run) return <Waiting st={st} error={error} onRefresh={() => void refresh()} onBack={onBack} onNext={onNext} />;
-  if (run.step === 'choosing' && run.pick) return <DrawCase key={`${run.position}-${run.pick}`} st={st} offer={offer} shop={shop.info} onState={(s) => setSt(s)} onResync={refresh} onAct={act} onBack={onBack} />;
+  const view = (() => {
+  if (ended) return <Finished st={st} onBack={onBack} after={after} />;
+  if (!st.acting || !run) return <Waiting st={st} error={error} onRefresh={() => void refresh()} onBack={onBack} after={after} />;
+  if (run.step === 'choosing' && run.pick) return <DrawCase key={`${run.position}-${run.pick}`} st={st} offer={offer} shop={shop.info} onState={(s) => { setSt(s); setFlash(`Case ${run.position} publiée`); onChanged(); }} onResync={refresh} onAct={act} onBack={onBack} />;
   if (run.step === 'choosing') return <Pick st={st} offer={offer} shop={shop.info} busy={busy} error={error} onAct={act} onBack={onBack} />;
   if (run.step === 'upgrade') {
     return (
@@ -97,14 +106,21 @@ export function MultiPlay({ gameId, onBack, onNext }: { gameId: string; onBack: 
     );
   }
   if (run.step === 'demands') return <Demands st={st} busy={busy} error={error} onAct={act} onBack={onBack} />;
-  return <Waiting st={st} error={error} onRefresh={() => void refresh()} onBack={onBack} onNext={onNext} />;
+  return <Waiting st={st} error={error} onRefresh={() => void refresh()} onBack={onBack} after={after} />;
+  })();
+  return (
+    <>
+      {view}
+      {flash && <div className="sv-toast" role="status">{flash}</div>}
+    </>
+  );
 }
 
 function Frame({ title, subtitle, onBack, children }: { title: string; subtitle?: string; onBack: () => void; children: React.ReactNode }) {
   return (
     <div className="app-shell">
       <main>
-        <PageFrame title={title} subtitle={subtitle} backHref={hrefOf({ name: 'home' })} tone="lavender" right={<span />}>
+        <PageFrame title={title} subtitle={subtitle} tone="lavender" right={<ToyButton variant="soft" size="s" iconOnly icon="back" aria-label="Retour à mes parties" onClick={onBack} />}>
           {children}
           <div className="row-buttons">
             <ToyButton variant="ghost" icon="back" onClick={onBack}>Mes parties</ToyButton>
@@ -123,8 +139,8 @@ function Standings({ st }: { st: MpState }) {
   if (!me) return null;
   return (
     <div className="sv-versus">
-      <InkGauge left={me.reserve} capacity={me.capacity} label={g.mode === 'relay' ? 'Réserve commune' : g.mode === 'battle' ? 'Ma réserve' : 'Ma réserve'} />
-      {rival && <InkGauge left={rival.reserve} capacity={rival.capacity} rival label={`Réserve de ${rival.nickname ?? 'l’adversaire'}`} />}
+      <InkGauge left={me.reserve} capacity={me.capacity} label={g.mode === 'relay' ? 'Encre commune' : 'Ton encre'} />
+      {rival && <InkGauge left={rival.reserve} capacity={rival.capacity} rival label={`Encre de ${rival.nickname ?? 'l’adversaire'}`} />}
     </div>
   );
 }
@@ -143,6 +159,8 @@ function Pick({ st, offer, shop, busy, error, onAct, onBack }: { st: MpState; of
   return (
     <Frame title={`Case ${run.position}/${g.total_cases}`} subtitle={`${PHASE_LABELS[phaseOf(run.position, g.total_cases)]} · ${g.theme}`} onBack={onBack}>
       <Standings st={st} />
+      <ContextHint id="hint-ink">Chaque action de dessin consomme de l’encre de dessin (la jauge). Terminer une case en rend: plus la demande est dure, plus elle en rend.</ContextHint>
+      {g.mode === 'relay' && <ContextHint id="hint-relay">En Relay, l’encre est commune: chaque trait fait fondre la réserve de toute l’équipe, et la BD est perdue si elle tombe à zéro.</ContextHint>}
       {shop?.allowed && (
         <div className="sv-shop">
           <BonusPill balance={shop.balance} />
@@ -188,6 +206,7 @@ function DrawCase({ st, offer, shop, onState, onResync, onAct, onBack }: { st: M
   const version = useSyncExternalStore(session.subscribe, session.getVersion);
   const [notice, setNotice] = useState<string | null>(null);
   const [publishing, setPublishing] = useState(false);
+  const [peek, setPeek] = useState(false);
   const attempt = useRef<{ sub: string; version: number } | null>(null);
   const stuckSent = useRef(false);
   const lastBeat = useRef(Date.now());
@@ -265,8 +284,8 @@ function DrawCase({ st, offer, shop, onState, onResync, onAct, onBack }: { st: M
               <span className="sv-reward" title="Encre gagnée en terminant la case">+{reward}</span>
             </div>
           )}
-          <InkGauge left={session.inkLeft} capacity={run.capacity} pending={session.pendingCost} label={g.mode === 'relay' ? 'Réserve commune' : 'Ma réserve'} />
-          {rival && <InkGauge left={rival.reserve} capacity={rival.capacity} rival label={`Réserve de ${rival.nickname ?? 'l’adversaire'}`} />}
+          <InkGauge left={session.inkLeft} capacity={run.capacity} pending={session.pendingCost} label={g.mode === 'relay' ? 'Encre commune' : 'Ton encre'} />
+          {rival && <InkGauge left={rival.reserve} capacity={rival.capacity} rival label={`Encre de ${rival.nickname ?? 'l’adversaire'}`} />}
           <div className="sv-brief__tools">
             {g.seconds_left !== null && <span className="sv-empty">{g.mode === 'relay' ? 'Réservation' : 'Délai'} : {formatRemaining(g.seconds_left)}</span>}
             {session.inkLeft < 10 && run.emergency === 0 && shop?.allowed && offer('emergency_refill')}
@@ -274,7 +293,12 @@ function DrawCase({ st, offer, shop, onState, onResync, onAct, onBack }: { st: M
               <ToyButton variant="danger" size="s" icon="alert" onClick={emergency}>Dernier souffle +{SURVIVOR.upgrades.dernierSouffle}</ToyButton>
             )}
             {session.inkLeft < SURVIVOR.ink.minPlayable && <span className="sv-empty">Plus d’encre !</span>}
+            {st.cases.length > 0 && <ToyButton variant="soft" size="s" icon="eye" onClick={() => setPeek(true)}>Cases précédentes</ToyButton>}
           </div>
+          <ToyDialog open={peek} title="Cases précédentes" onClose={() => setPeek(false)} actions={<ToyButton variant="primary" onClick={() => setPeek(false)}>Retour au dessin</ToyButton>}>
+            <p className="hint">Ton dessin en cours reste là, intact.</p>
+            <Gallery cases={st.cases} title={g.theme} />
+          </ToyDialog>
           {notice && <p className="sv-notice" role="status">{notice}</p>}
         </div>
       }
@@ -292,7 +316,7 @@ function Demands({ st, busy, error, onAct, onBack }: { st: MpState; busy: boolea
   if (!options) return null;
   const ready = LEVELS.every((l) => chosen[l]);
   return (
-    <Frame title="Prépare le tour de ton adversaire" subtitle={`Après ta case · ${g.theme}`} onBack={onBack}>
+    <Frame title="Choisis les contraintes de ton adversaire" subtitle={`Après ta case · ${g.theme}`} onBack={onBack}>
       <Standings st={st} />
       <p className="sv-lead">Choisis une demande facile, une intermédiaire et une difficile. {rival?.nickname ?? 'Ton adversaire'} en choisira une: plus c’est dur, plus elle rapporte d’encre.</p>
       {LEVELS.map((l) => (
@@ -315,22 +339,24 @@ function Demands({ st, busy, error, onAct, onBack }: { st: MpState; busy: boolea
 
 // ───────────── Attente ─────────────
 
-function Waiting({ st, error, onRefresh, onBack, onNext }: { st: MpState; error: string | null; onRefresh: () => void; onBack: () => void; onNext?: () => void }) {
+function Waiting({ st, error, onRefresh, onBack, after }: { st: MpState; error: string | null; onRefresh: () => void; onBack: () => void; after: AfterActions }) {
   const g = st.game;
+  const state = matchState(g);
   return (
     <Frame title={`${MODE_LABELS[g.mode]} · ${g.theme}`} subtitle={describeGame(g)} onBack={onBack}>
       <Standings st={st} />
       <ToyCard tone="yellow">
+        <p className={`sv-state sv-state--${state.key}`}>{g.mode === 'relay' ? 'Le relais est chez un autre dessinateur' : state.label}</p>
         <p className="hint">{g.mode === 'duel' ? g.players.map((p) => `${p.is_me ? 'Toi' : p.nickname} ${p.cases_done}/${g.total_cases}`).join(' · ') || `0/${g.total_cases}` : `${g.cases_done}/${g.total_cases} cases`}</p>
         {g.seconds_left !== null && <p className="hint">Délai : {formatRemaining(g.seconds_left)} restantes</p>}
         {st.upgrade_wait_seconds !== null && <p className="hint">L’auteur de la dernière case choisit son amélioration ({formatRemaining(st.upgrade_wait_seconds)} au plus).</p>}
         <p className="hint">Rien à faire pour l’instant: la partie t’attendra sur le serveur, tu peux fermer l’application.</p>
         <div className="row-buttons">
           <ToyButton variant="soft" icon="rotate" onClick={onRefresh}>Actualiser</ToyButton>
-          {onNext && <ToyButton variant="primary" icon="play" onClick={onNext}>Jouer une autre partie</ToyButton>}
         </div>
         {error && <p className="sv-notice sv-notice--error" role="alert">{error}</p>}
       </ToyCard>
+      <NextActions after={after} onGames={onBack} />
       <Gallery cases={st.cases} title="Les cases jusqu’ici" />
     </Frame>
   );
@@ -402,7 +428,7 @@ function levelCounts(cases: readonly MpCase[]) {
   return out;
 }
 
-function Finished({ st, onBack, onNext }: { st: MpState; onBack: () => void; onNext?: () => void }) {
+function Finished({ st, onBack, after }: { st: MpState; onBack: () => void; after: AfterActions }) {
   const g = st.game;
   const owners = [...new Set(st.cases.map((c) => c.bd_owner))];
   const names = new Map<string, string>(UPGRADES.map((u) => [u.id, u.name]));
@@ -473,7 +499,7 @@ function Finished({ st, onBack, onNext }: { st: MpState; onBack: () => void; onN
           {askError && <p className="sv-notice sv-notice--error" role="alert">{askError}</p>}
         </ToyCard>
       )}
-      {onNext && <div className="row-buttons"><ToyButton variant="primary" icon="play" onClick={onNext}>Jouer une autre partie</ToyButton></div>}
+      <NextActions after={after} onGames={onBack} />
     </Frame>
   );
 }
