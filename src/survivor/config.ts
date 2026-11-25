@@ -34,9 +34,11 @@ export const SURVIVOR = {
   /** Part de l'encre rendue par la gomme sans amélioration (0 = rien). */
   eraseRefund: 0,
 
+  /** Encre gagnée en terminant une case, selon la difficulté de la demande choisie. */
   rewards: {
-    respected: 20,
-    notRespected: 5,
+    easy: 10,
+    medium: 20,
+    hard: 35,
   },
 
   /** Pixels dessinés minimum pour qu'une case compte comme terminée. */
@@ -59,9 +61,9 @@ export const SURVIVOR = {
     recyclageMax: 0.8,
     /** Régénération: encre en plus entre deux cases, par exemplaire. */
     regeneration: 4,
-    /** Joker: remplacements de contrainte accordés par exemplaire. */
+    /** Joker: renouvellements des trois demandes accordés par exemplaire. */
     jokerCharges: 2,
-    /** Narrateur: récompense en plus pour une contrainte respectée, par exemplaire. */
+    /** Narrateur: récompense en plus pour la demande choisie, par exemplaire. */
     narrateur: 5,
     /** Dernier souffle: encre de la réserve d'urgence, et charges par exemplaire. */
     dernierSouffle: 25,

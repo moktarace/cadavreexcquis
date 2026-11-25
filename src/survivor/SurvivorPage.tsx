@@ -7,9 +7,9 @@ import { EditorWorkspace } from '../editor/ui/EditorWorkspace';
 import { PageFrame } from '../pages/shared';
 import { PixelIcon, ToyButton, ToyCard, ToyDialog } from '../ui';
 import { SURVIVOR } from './config';
-import { constraintById, diceOf } from './constraints';
+import { LEVELS, LEVEL_LABELS, constraintById, diceOf } from './constraints';
 import { exportSurvivorPng } from './exportSheet';
-import { SurvivorGame } from './game';
+import { SurvivorGame, type CaseGain } from './game';
 import { clearRun, loadRun, saveRun } from './storage';
 import { UPGRADES, upgradeById } from './upgrades';
 import './survivor.css';
@@ -17,8 +17,16 @@ import './survivor.css';
 /** Mode expérimental (#/lab/survivor): une BD de 16 cases à finir avant d'être à court d'encre. Hors ligne, sans compte. */
 export default function SurvivorPage() {
   const [game, setGame] = useState<SurvivorGame | null>(null);
-  const [saved] = useState(() => loadRun());
+  const [saved, setSaved] = useState(() => loadRun());
+  const [toast, setToast] = useState<string | null>(null);
   const [, bump] = useReducer((n: number) => n + 1, 0);
+
+  // Gain d'encre: un bref message qui ne bloque rien.
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 1800);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   const changed = (g: SurvivorGame) => {
     saveRun(g);
@@ -30,12 +38,30 @@ export default function SurvivorPage() {
     saveRun(g);
     setGame(g);
   };
+  // Le menu relit la dernière sauvegarde: la reprise ne propose jamais une version périmée.
+  const toMenu = () => {
+    setSaved(loadRun());
+    setGame(null);
+  };
+  const finished = (g: SurvivorGame, gain: CaseGain) => {
+    changed(g);
+    setToast(`+${Math.round(gain.gained)} d’encre${gain.gained < gain.reward ? ' · réserve pleine' : ''}`);
+  };
 
-  if (!game) return <Menu saved={saved} onNew={start} onResume={() => saved && setGame(saved)} />;
-  const phase = game.state.phase;
-  if (phase === 'finished') return <End game={game} onRestart={start} onMenu={() => setGame(null)} />;
-  if (phase === 'upgrade') return <UpgradeView game={game} onPick={(id) => game.chooseUpgrade(id) && changed(game)} />;
-  return <Play key={game.state.caseNo} game={game} onChange={() => changed(game)} onQuit={() => setGame(null)} />;
+  let view;
+  if (!game) view = <Menu saved={saved} onNew={start} onResume={() => saved && setGame(saved)} />;
+  else if (game.state.phase === 'finished') view = <End game={game} onRestart={start} onMenu={toMenu} />;
+  else if (game.state.phase === 'upgrade') view = <UpgradeView game={game} onPick={(id) => game.chooseUpgrade(id) && changed(game)} />;
+  else if (game.state.phase === 'choosing') {
+    view = <ChooseView game={game} onPick={(id) => game.choose(id) && changed(game)} onJoker={() => game.rerollProposals() && changed(game)} onMenu={toMenu} />;
+  } else view = <Play key={game.state.caseNo} game={game} onChange={() => changed(game)} onFinished={(gain) => finished(game, gain)} onQuit={toMenu} />;
+
+  return (
+    <>
+      {view}
+      {toast && <div className="sv-toast" role="status">{toast}</div>}
+    </>
+  );
 }
 
 // ───────────── Menu ─────────────
@@ -48,9 +74,9 @@ function Menu({ saved, onNew, onResume }: { saved: SurvivorGame | null; onNew: (
           <ToyCard tone="yellow">
             <p className="plain-text"><strong>{SURVIVOR.totalCases} cases à dessiner avant la panne d’encre.</strong></p>
             <ul className="sv-rules">
-              <li>Un thème tiré au hasard, une contrainte par case.</li>
+              <li>Un thème tiré au hasard. Avant chaque case, l’éditeur propose trois demandes : choisis celle que tu glisses dans ton histoire.</li>
               <li>Une seule réserve d’encre pour toute la partie : traits, Mimo, textes et décors la font fondre.</li>
-              <li>Après chaque case, dis si tu as respecté la contrainte : +{SURVIVOR.rewards.respected} d’encre si oui, +{SURVIVOR.rewards.notRespected} sinon.</li>
+              <li>Terminer la case rapporte de l’encre selon la demande : +{SURVIVOR.rewards.easy} (facile), +{SURVIVOR.rewards.medium} (intermédiaire), +{SURVIVOR.rewards.hard} (difficile).</li>
               <li>Toutes les {SURVIVOR.upgradeEvery} cases, une amélioration à choisir parmi {SURVIVOR.offerSize}.</li>
             </ul>
             <div className="row-buttons">
@@ -93,7 +119,7 @@ function InkGauge({ left, capacity, pending }: { left: number; capacity: number;
 
 // ───────────── Une case ─────────────
 
-function Play({ game, onChange, onQuit }: { game: SurvivorGame; onChange: () => void; onQuit: () => void }) {
+function Play({ game, onChange, onFinished, onQuit }: { game: SurvivorGame; onChange: () => void; onFinished: (gain: CaseGain) => void; onQuit: () => void }) {
   const [session] = useState(() => {
     const s = new EditorSession();
     s.ink = game.rules;
@@ -104,7 +130,7 @@ function Play({ game, onChange, onQuit }: { game: SurvivorGame; onChange: () => 
   const [reviewOpen, setReviewOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const s = game.state;
-  const validating = s.phase === 'validating';
+  const asked = game.constraint;
 
   // Défaite: plus d'encre, plus d'action gratuite ni de secours, et une case encore trop vide pour être terminée.
   useEffect(() => {
@@ -122,8 +148,8 @@ function Play({ game, onChange, onQuit }: { game: SurvivorGame; onChange: () => 
       return;
     }
     setNotice(null);
-    game.finishCase(pixels, session.project.ink?.spent ?? 0);
-    onChange();
+    const gain = game.finishCase(pixels, session.project.ink?.spent ?? 0);
+    if (gain) onFinished(gain);
   };
 
   const emergency = () => {
@@ -146,13 +172,15 @@ function Play({ game, onChange, onQuit }: { game: SurvivorGame; onChange: () => 
             <strong>Case {s.caseNo}/{SURVIVOR.totalCases}</strong>
             <span>{game.phaseLabel} · {s.theme}</span>
           </div>
-          <p className="sv-constraint"><span className="sv-dice" aria-label={`Dés ${game.constraint.id}`}>{diceOf(game.constraint.id)}</span> {game.constraint.text}</p>
+          {asked && (
+            <div className="sv-ask">
+              <p className="sv-constraint"><span className="sv-dice" aria-label={`Dés ${asked.id}`}>{diceOf(asked.id)}</span> {asked.text}</p>
+              <span className="sv-reward" title="Encre gagnée en terminant la case">+{game.rewardOf(asked.id)}</span>
+            </div>
+          )}
           <InkGauge left={session.inkLeft} capacity={game.capacity} pending={session.pendingCost} />
           <div className="sv-brief__tools">
             <ToyButton variant="soft" size="s" icon="eye" onClick={() => setReviewOpen(true)} disabled={game.cases.length === 0}>Cases</ToyButton>
-            {s.jokers > 0 && (
-              <ToyButton variant="soft" size="s" icon="swap" onClick={() => game.replaceConstraint() && onChange()}>Joker ×{s.jokers}</ToyButton>
-            )}
             {s.emergency > 0 && session.inkLeft < 10 && (
               <ToyButton variant="danger" size="s" icon="alert" onClick={emergency}>Dernier souffle +{SURVIVOR.upgrades.dernierSouffle}</ToyButton>
             )}
@@ -172,27 +200,47 @@ function Play({ game, onChange, onQuit }: { game: SurvivorGame; onChange: () => 
           {game.cases.map((c, i) => (
             <li key={i}>
               <PixelThumb pixels={c} label={`Case ${i + 1}`} />
-              <span><strong>{i + 1}</strong> {s.results[i] ? '✓' : '✗'} {constraintById(s.constraintIds[i])?.text}</span>
+              <span><strong>{i + 1}</strong> {constraintById(s.constraintIds[i])?.text}</span>
             </li>
           ))}
         </ul>
       </ToyDialog>
-      <ToyDialog
-        open={validating}
-        title="Contrainte respectée ?"
-        locked
-        onClose={() => {}}
-        actions={
-          <>
-            <ToyButton variant="soft" onClick={() => { game.validate(false); onChange(); }}>Non · +{game.rewardFor(false)}</ToyButton>
-            <ToyButton variant="success" icon="check" onClick={() => { game.validate(true); onChange(); }}>Oui · +{game.rewardFor(true)}</ToyButton>
-          </>
-        }
-      >
-        <p className="plain-text"><strong>{game.constraint.text}</strong></p>
-        <p className="hint">À toi de juger : le jeu te fait confiance. Respecter la contrainte rend plus d’encre.</p>
-      </ToyDialog>
     </EditorWorkspace>
+  );
+}
+
+// ───────────── Choix de la demande ─────────────
+
+function ChooseView({ game, onPick, onJoker, onMenu }: { game: SurvivorGame; onPick: (id: string) => void; onJoker: () => void; onMenu: () => void }) {
+  const s = game.state;
+  return (
+    <div className="app-shell">
+      <main>
+        <PageFrame title={`Case ${s.caseNo}/${SURVIVOR.totalCases}`} subtitle={`${game.phaseLabel} · ${s.theme}`} tone="lavender" right={<span />}>
+          <div className="sv-choose-gauge">
+            <InkGauge left={s.reserve} capacity={game.capacity} pending={0} />
+          </div>
+          <p className="sv-lead">L’éditeur a trois demandes. Laquelle glisses-tu dans ton histoire ?</p>
+          <div className="sv-picks">
+            {s.proposals.map((id) => {
+              const c = constraintById(id)!;
+              return (
+                <button key={id} type="button" className={`sv-pick sv-pick--${c.level}`} onClick={() => onPick(id)}>
+                  <span className="sv-pick__level">{LEVEL_LABELS[c.level]}</span>
+                  <span className="sv-pick__dice" aria-hidden="true">{diceOf(id)}</span>
+                  <span className="sv-pick__text">{c.text}</span>
+                  <span className="sv-pick__reward">+{game.rewardOf(id)} d’encre</span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="row-buttons">
+            {s.jokers > 0 && <ToyButton variant="soft" icon="swap" onClick={onJoker}>Joker ×{s.jokers} · nouvelles demandes</ToyButton>}
+            <ToyButton variant="ghost" icon="back" onClick={onMenu}>Menu</ToyButton>
+          </div>
+        </PageFrame>
+      </main>
+    </div>
   );
 }
 
@@ -234,6 +282,7 @@ function End({ game, onRestart, onMenu }: { game: SurvivorGame; onRestart: () =>
   const s = game.state;
   const won = s.outcome === 'victory';
   const [error, setError] = useState<string | null>(null);
+  const chosen = game.chosenByLevel;
   const owned = UPGRADES.filter((u) => (s.upgrades[u.id] ?? 0) > 0);
   const title = `Survivor · ${won ? 'victoire' : 'défaite'} · ${game.finishedCases}/${SURVIVOR.totalCases} cases · « ${s.theme} »`;
   return (
@@ -250,7 +299,7 @@ function End({ game, onRestart, onMenu }: { game: SurvivorGame; onRestart: () =>
           <ToyCard tone={won ? 'green' : 'yellow'}>
             <ul className="sv-stats">
               <li><strong>{game.finishedCases}</strong> case{game.finishedCases > 1 ? 's' : ''} terminée{game.finishedCases > 1 ? 's' : ''} sur {SURVIVOR.totalCases}</li>
-              <li><strong>{game.respectedCount}</strong> contrainte{game.respectedCount > 1 ? 's' : ''} respectée{game.respectedCount > 1 ? 's' : ''}</li>
+              <li>Demandes choisies : {LEVELS.map((l) => `${chosen[l]} ${LEVEL_LABELS[l].toLowerCase()}${chosen[l] > 1 && l !== 'medium' ? 's' : ''}`).join(' · ')}</li>
               <li><strong>{Math.round(s.totalSpent)}</strong> d’encre consommée au total</li>
               <li>Améliorations : {owned.length ? owned.map((u) => `${u.name}${(s.upgrades[u.id] ?? 0) > 1 ? ` ×${s.upgrades[u.id]}` : ''}`).join(', ') : 'aucune'}</li>
             </ul>

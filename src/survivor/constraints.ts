@@ -8,11 +8,42 @@ export const PHASE_LABELS: Record<Phase, string> = {
   denouement: 'Dénouement',
 };
 
+export type Level = 'easy' | 'medium' | 'hard';
+
+export const LEVELS: readonly Level[] = ['easy', 'medium', 'hard'];
+export const LEVEL_LABELS: Record<Level, string> = { easy: 'Facile', medium: 'Intermédiaire', hard: 'Difficile' };
+
 export interface Constraint {
   /** Les deux dés lus de gauche à droite, par exemple « 31 ». */
   id: string;
   text: string;
+  level: Level;
+  /** Étapes où la demande peut être proposée (toutes si absent). */
+  phases?: readonly Phase[];
+  /** Première case où elle peut être proposée. */
+  minCase?: number;
 }
+
+/** Classement provisoire par difficulté (la récompense en encre est dans config.ts). */
+const LEVEL_IDS: Record<Level, readonly string[]> = {
+  easy: ['16', '21', '24', '25', '32', '34', '42', '44', '52', '54', '55', '63'],
+  medium: ['12', '13', '22', '26', '31', '35', '36', '41', '43', '45', '64', '65'],
+  hard: ['11', '14', '15', '23', '33', '46', '51', '53', '56', '61', '62', '66'],
+};
+
+/** Éligibilité narrative provisoire: ce qui n'a pas de sens trop tôt ou compliquerait la fin. */
+const ELIGIBILITY: Record<string, Pick<Constraint, 'phases' | 'minCase'>> = {
+  '12': { minCase: 2 },
+  '21': { phases: ['intro', 'complication', 'escalade'] },
+  '11': { phases: ['complication', 'escalade'] },
+  '14': { phases: ['complication', 'escalade', 'denouement'] },
+  '15': { phases: ['complication', 'escalade'] },
+  '33': { phases: ['intro', 'complication', 'escalade'] },
+  '51': { phases: ['intro', 'complication', 'escalade'] },
+  '53': { phases: ['intro', 'complication', 'escalade'] },
+  '62': { phases: ['intro', 'complication', 'escalade'] },
+  '66': { phases: ['complication', 'escalade'] },
+};
 
 const TABLE: Record<string, string> = {
   '11': 'Un personnage révèle un pouvoir caché, ou un nouveau pouvoir s’éveille.',
@@ -53,7 +84,9 @@ const TABLE: Record<string, string> = {
   '66': 'Un allié trahit soudain.',
 };
 
-export const CONSTRAINTS: readonly Constraint[] = Object.entries(TABLE).map(([id, text]) => ({ id, text }));
+const levelOf = (id: string): Level => LEVELS.find((l) => LEVEL_IDS[l].includes(id))!;
+
+export const CONSTRAINTS: readonly Constraint[] = Object.entries(TABLE).map(([id, text]) => ({ id, text, level: levelOf(id), ...ELIGIBILITY[id] }));
 
 /** Les deux dés en faces Unicode: « 31 » donne ⚂⚀. */
 export const diceOf = (id: string) => [...id].map((d) => String.fromCodePoint(0x267f + Number(d))).join('');
@@ -66,9 +99,27 @@ export function phaseOf(caseNo: number, total: number): Phase {
 
 export const constraintById = (id: string) => CONSTRAINTS.find((c) => c.id === id);
 
-/** Lance les deux dés: une consigne pas encore vue (ni celle qu'on remplace), ou à défaut n'importe laquelle sauf celle-ci. */
-export function pickConstraint(used: readonly string[], rng: () => number, avoid?: string): Constraint {
-  let pool = CONSTRAINTS.filter((c) => !used.includes(c.id) && c.id !== avoid);
-  if (!pool.length) pool = CONSTRAINTS.filter((c) => c.id !== avoid);
-  return pool[Math.min(pool.length - 1, Math.floor(rng() * pool.length))];
+/** Une demande peut-elle être proposée à cette case (étape et rang)? */
+export function isEligible(c: Constraint, caseNo: number, total: number): boolean {
+  return (!c.phases || c.phases.includes(phaseOf(caseNo, total))) && caseNo >= (c.minCase ?? 1);
+}
+
+const pickOne = <T,>(pool: readonly T[], rng: () => number): T => pool[Math.min(pool.length - 1, Math.floor(rng() * pool.length))];
+
+/**
+ * Les trois demandes d'une case, une par difficulté, dans l'ordre facile, intermédiaire, difficile.
+ * Évite d'abord les demandes déjà choisies (et `avoid`, pour un Joker); n'en répète une qu'en dernier recours.
+ */
+export function drawProposals(caseNo: number, total: number, chosen: readonly string[], rng: () => number, avoid: readonly string[] = []): string[] {
+  return LEVELS.map((level) => {
+    const all = CONSTRAINTS.filter((c) => c.level === level);
+    const fit = all.filter((c) => isEligible(c, caseNo, total));
+    const tiers = [
+      fit.filter((c) => !chosen.includes(c.id) && !avoid.includes(c.id)),
+      fit.filter((c) => !chosen.includes(c.id)),
+      fit,
+      all,
+    ];
+    return pickOne(tiers.find((t) => t.length) ?? all, rng).id;
+  });
 }

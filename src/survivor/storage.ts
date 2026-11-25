@@ -1,5 +1,5 @@
 import { constraintById } from './constraints';
-import { SurvivorGame, type RunState } from './game';
+import { SurvivorGame, type RunState, type RunStateV1 } from './game';
 
 const KEY = 'cl.survivor.v1';
 
@@ -28,13 +28,14 @@ export function decodeCase(text: string, length: number): Uint8Array {
 }
 
 interface Saved {
-  state: RunState;
+  state: RunState | RunStateV1;
   cases: string[];
 }
 
 const PIXELS = 320 * 240;
 
-/** Garde la partie (cases terminées et progression), jamais le dessin en cours. Faux si le stockage refuse. */
+/** Garde la partie (cases terminées, progression, demandes proposées et choisie), jamais le dessin en cours.
+ Faux si le stockage refuse. */
 export function saveRun(game: SurvivorGame): boolean {
   try {
     const saved: Saved = { state: game.state, cases: game.cases.map(encodeCase) };
@@ -45,15 +46,19 @@ export function saveRun(game: SurvivorGame): boolean {
   }
 }
 
+/** Dernière partie enregistrée; une partie de l'ancien format est migrée (cases conservées) puis réécrite. */
 export function loadRun(rng?: () => number): SurvivorGame | null {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return null;
     const saved = JSON.parse(raw) as Saved;
-    if (saved.state?.version !== 1) return null;
-    if (saved.state.constraintIds.some((id) => !constraintById(id))) return null;
-    const game = new SurvivorGame(saved.state, rng);
+    const old = saved.state.version === 1;
+    const game = old ? SurvivorGame.fromV1(saved.state as RunStateV1, rng) : new SurvivorGame(saved.state as RunState, rng);
+    if (!old && saved.state.version !== 2) return null;
+    const s = game.state;
+    if (s.phase === 'choosing' && !s.proposals.every(constraintById)) return null;
     game.cases = saved.cases.map((c) => decodeCase(c, PIXELS));
+    if (old) saveRun(game);
     return game;
   } catch {
     return null;

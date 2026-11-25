@@ -24,8 +24,8 @@ export const UPGRADES: readonly UpgradeDef[] = [
   { id: 'ecrivain', name: 'Écrivain', icon: 'book', max: 3, text: `Les textes coûtent ${pct(U.ecrivain)} de moins.` },
   { id: 'recyclage', name: 'Recyclage', icon: 'rotate', max: 4, text: `La gomme rend ${pct(U.recyclage)} de l'encre dépensée sur ce qu'elle efface.` },
   { id: 'regeneration', name: 'Régénération', icon: 'plus', max: 5, text: `+${U.regeneration} d'encre entre deux cases.` },
-  { id: 'joker', name: 'Joker', icon: 'swap', max: 99, text: `${U.jokerCharges} remplacements de contrainte.` },
-  { id: 'narrateur', name: 'Narrateur', icon: 'pages', max: 4, text: `Une contrainte respectée rapporte +${U.narrateur} d'encre.` },
+  { id: 'joker', name: 'Joker', icon: 'swap', max: 99, text: `${U.jokerCharges} renouvellements des trois demandes, avant de commencer à dessiner.` },
+  { id: 'narrateur', name: 'Narrateur', icon: 'pages', max: 4, text: `La demande choisie rapporte +${U.narrateur} d'encre de plus.` },
   { id: 'souffle', name: 'Dernier souffle', icon: 'alert', max: 2, text: `Une réserve d'urgence de ${U.dernierSouffle} d'encre, utilisable une seule fois.` },
 ];
 
@@ -44,7 +44,7 @@ export interface Modifiers {
   eraseRefund: number;
   /** Encre gagnée en plus entre deux cases. */
   regen: number;
-  /** Bonus de la récompense d'une contrainte respectée. */
+  /** Bonus ajouté à la récompense de la demande choisie. */
   reward: number;
 }
 

@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HEIGHT, WIDTH } from '../editor/palette';
 import { EditorSession } from '../editor/session';
 import { SURVIVOR } from './config';
-import { CONSTRAINTS, constraintById, diceOf, phaseOf, pickConstraint } from './constraints';
-import { SurvivorGame } from './game';
+import { CONSTRAINTS, LEVELS, constraintById, diceOf, drawProposals, isEligible, phaseOf, type Level } from './constraints';
+import { SurvivorGame, type RunStateV1 } from './game';
 import { inkRulesFor } from './rules';
 import { clearRun, decodeCase, encodeCase, loadRun, saveRun } from './storage';
 import { UPGRADES, modifiersOf, offerUpgrades } from './upgrades';
@@ -275,13 +275,26 @@ describe('améliorations', () => {
   });
 });
 
-describe('consignes de l’éditeur (deux dés)', () => {
+const TOTAL = SURVIVOR.totalCases;
+const ids = (level: Level) => CONSTRAINTS.filter((c) => c.level === level).map((c) => c.id).sort();
+
+describe('banque de demandes', () => {
   it('la table compte les 36 résultats des deux dés, sans doublon', () => {
-    const ids = CONSTRAINTS.map((c) => c.id).sort();
-    expect(ids).toEqual(Array.from({ length: 36 }, (_, i) => `${Math.floor(i / 6) + 1}${(i % 6) + 1}`).sort());
+    const all = CONSTRAINTS.map((c) => c.id).sort();
+    expect(all).toEqual(Array.from({ length: 36 }, (_, i) => `${Math.floor(i / 6) + 1}${(i % 6) + 1}`).sort());
     expect(new Set(CONSTRAINTS.map((c) => c.text)).size).toBe(36);
     expect(constraintById('31')?.text).toBe('Un personnage se transforme.');
     expect(diceOf('31')).toBe('\u2682\u2680');
+  });
+
+  it('douze demandes par difficulté, selon le classement prévu', () => {
+    expect(ids('easy')).toEqual(['16', '21', '24', '25', '32', '34', '42', '44', '52', '54', '55', '63']);
+    expect(ids('medium')).toEqual(['12', '13', '22', '26', '31', '35', '36', '41', '43', '45', '64', '65']);
+    expect(ids('hard')).toEqual(['11', '14', '15', '23', '33', '46', '51', '53', '56', '61', '62', '66']);
+  });
+
+  it('récompenses: 10, 20 et 35 d’encre', () => {
+    expect(SURVIVOR.rewards).toEqual({ easy: 10, medium: 20, hard: 35 });
   });
 
   it('les quatre étapes d’une partie de 16 cases restent égales', () => {
@@ -292,75 +305,194 @@ describe('consignes de l’éditeur (deux dés)', () => {
     expect(phases.slice(12)).toEqual(['denouement', 'denouement', 'denouement', 'denouement']);
   });
 
-  it('ne tire pas deux fois la même consigne, ni celle qu’on remplace', () => {
-    const rng = seeded(3);
-    const used: string[] = [];
-    for (let i = 0; i < 16; i++) used.push(pickConstraint(used, rng).id);
-    expect(new Set(used).size).toBe(16);
-    expect(pickConstraint(used, rng, used[0]).id).not.toBe(used[0]);
+  it('chaque difficulté garde assez de demandes éligibles à chaque case', () => {
+    for (let n = 1; n <= TOTAL; n++) for (const l of LEVELS) expect(CONSTRAINTS.filter((c) => c.level === l && isEligible(c, n, TOTAL)).length).toBeGreaterThanOrEqual(5);
   });
 });
 
-/** Joue une case: dessine assez, la termine, répond à la contrainte. */
-function playCase(game: SurvivorGame, respected: boolean, spent = 6) {
-  const pixels = new Uint8Array(WIDTH * HEIGHT);
-  pixels.fill(1, 0, 400);
-  expect(game.finishCase(pixels, spent)).toBe(true);
-  game.validate(respected);
+describe('tirage des trois demandes', () => {
+  it('propose une demande facile, une intermédiaire et une difficile, toutes éligibles', () => {
+    const rng = seeded(21);
+    for (let n = 1; n <= TOTAL; n++) {
+      for (let i = 0; i < 20; i++) {
+        const picks = drawProposals(n, TOTAL, [], rng).map((id) => constraintById(id)!);
+        expect(picks.map((c) => c.level)).toEqual(['easy', 'medium', 'hard']);
+        expect(new Set(picks.map((c) => c.id)).size).toBe(3);
+        expect(picks.every((c) => isEligible(c, n, TOTAL))).toBe(true);
+      }
+    }
+  });
+
+  it('respecte l’éligibilité narrative', () => {
+    const seen = (n: number) => {
+      const out = new Set<string>();
+      const rng = seeded(n);
+      for (let i = 0; i < 300; i++) drawProposals(n, TOTAL, [], rng).forEach((id) => out.add(id));
+      return out;
+    };
+    expect(seen(1).has('12')).toBe(false); // pas de retour d'un ancien personnage à la première case
+    expect(seen(2).has('12')).toBe(true);
+    for (const n of [1, 2, 3, 4]) expect(seen(n).has('66')).toBe(false); // pas de trahison au début
+    expect(seen(6).has('66')).toBe(true);
+    for (const n of [13, 14, 15, 16]) for (const id of ['53', '51', '62', '33']) expect(seen(n).has(id)).toBe(false); // rien qui annonce ou ouvre une suite
+    expect(seen(16).has('15')).toBe(false);
+  });
+
+  it('ne repropose jamais une demande déjà choisie tant qu’il en reste d’inédites', () => {
+    for (let seed = 1; seed <= 30; seed++) {
+      const rng = seeded(seed);
+      const chosen: string[] = [];
+      for (let n = 1; n <= TOTAL; n++) chosen.push(drawProposals(n, TOTAL, chosen, rng)[n % 3]);
+      expect(new Set(chosen).size).toBe(TOTAL);
+    }
+  });
+
+  it('les demandes proposées mais non choisies peuvent revenir', () => {
+    const rng = seeded(2);
+    const shown = drawProposals(1, TOTAL, [], rng);
+    const again = new Set<string>();
+    for (let i = 0; i < 200; i++) drawProposals(2, TOTAL, [], rng).forEach((id) => again.add(id));
+    expect(shown.some((id) => again.has(id))).toBe(true);
+  });
+
+  it('en dernier recours, répète une demande en gardant trois propositions distinctes', () => {
+    const rng = seeded(5);
+    const chosen = CONSTRAINTS.map((c) => c.id);
+    const picks = drawProposals(8, TOTAL, chosen, rng);
+    expect(new Set(picks).size).toBe(3);
+    expect(picks.map((id) => constraintById(id)!.level)).toEqual(['easy', 'medium', 'hard']);
+    const almost = CONSTRAINTS.filter((c) => c.level === 'easy' && c.id !== '32').map((c) => c.id);
+    expect(drawProposals(8, TOTAL, almost, rng)[0]).toBe('32');
+  });
+
+  it('un Joker évite les demandes qui viennent d’être montrées', () => {
+    const rng = seeded(9);
+    for (let i = 0; i < 50; i++) {
+      const first = drawProposals(5, TOTAL, [], rng);
+      const next = drawProposals(5, TOTAL, [], rng, first);
+      expect(next.some((id, k) => id === first[k])).toBe(false);
+    }
+  });
+});
+
+const pixelsOf = () => {
+  const p = new Uint8Array(WIDTH * HEIGHT);
+  p.fill(1, 0, 400);
+  return p;
+};
+
+/** Choisit la demande de la difficulté voulue, puis termine la case. */
+function playCase(game: SurvivorGame, spent = 6, level: Level = 'easy') {
+  expect(game.choose(game.state.proposals[LEVELS.indexOf(level)])).toBe(true);
+  const gain = game.finishCase(pixelsOf(), spent);
+  expect(gain).not.toBeNull();
+  return gain!;
 }
 
 describe('déroulement de la partie', () => {
-  it('démarre avec un thème, une consigne et toute la réserve', () => {
+  it('démarre par le choix de trois demandes, avec un thème et toute la réserve', () => {
     const g = SurvivorGame.start(seeded(5));
     expect(g.state.theme.length).toBeGreaterThan(2);
-        expect(g.state).toMatchObject({ caseNo: 1, reserve: SURVIVOR.ink.start, phase: 'drawing', outcome: null });
+    expect(g.state).toMatchObject({ caseNo: 1, reserve: SURVIVOR.ink.start, phase: 'choosing', outcome: null, constraintIds: [] });
+    expect(g.state.proposals).toHaveLength(3);
+    expect(g.constraint).toBeUndefined();
+  });
+
+  it('impossible de commencer ou de terminer une case sans demande choisie', () => {
+    const g = SurvivorGame.start(seeded(5));
+    expect(g.finishCase(pixelsOf(), 0)).toBeNull();
+    expect(g.state.phase).toBe('choosing');
+    expect(g.choose('absent')).toBe(false);
+    expect(g.isStuck(0, false, new Uint8Array(WIDTH * HEIGHT))).toBe(false);
+  });
+
+  it('choisir une demande ouvre la case et la fige', () => {
+    const g = SurvivorGame.start(seeded(5));
+    const [easy, medium] = g.state.proposals;
+    expect(g.choose(medium)).toBe(true);
+    expect(g.state).toMatchObject({ phase: 'drawing', proposals: [], constraintIds: [medium] });
+    expect(g.constraint?.id).toBe(medium);
+    expect(g.choose(easy)).toBe(false);
+    expect(g.rerollProposals()).toBe(false);
   });
 
   it('refuse de terminer une case encore vide', () => {
     const g = SurvivorGame.start(seeded(5));
-    expect(g.finishCase(new Uint8Array(WIDTH * HEIGHT), 0)).toBe(false);
+    g.choose(g.state.proposals[0]);
+    expect(g.finishCase(new Uint8Array(WIDTH * HEIGHT), 0)).toBeNull();
     expect(g.state.phase).toBe('drawing');
   });
 
-  it('récompense une contrainte respectée (+20) ou non (+5), plafonnée par la capacité', () => {
-    const yes = SurvivorGame.start(seeded(1));
-    playCase(yes, true, 30);
-    expect(yes.state.reserve).toBe(70 + 20);
-    const no = SurvivorGame.start(seeded(1));
-    playCase(no, false, 30);
-    expect(no.state.reserve).toBe(70 + 5);
+  it('verse automatiquement la récompense de la demande choisie en terminant la case', () => {
+    for (const [level, reward] of [['easy', 10], ['medium', 20], ['hard', 35]] as const) {
+      const g = SurvivorGame.start(seeded(1));
+      const gain = playCase(g, 50, level);
+      expect(gain).toEqual({ reward, gained: reward });
+      expect(g.state.reserve).toBe(50 + reward);
+      expect(g.state.totalSpent).toBe(50);
+      expect(g.state.spentPerCase).toEqual([50]);
+    }
+  });
+
+  it('ne verse la récompense qu’une fois par case', () => {
+    const g = SurvivorGame.start(seeded(1));
+    playCase(g, 50, 'hard');
+    const reserve = g.state.reserve;
+    expect(g.finishCase(pixelsOf(), 0)).toBeNull();
+    expect(g.finishCase(pixelsOf(), 0)).toBeNull();
+    expect(g.state.reserve).toBe(reserve);
+    expect(g.cases).toHaveLength(1);
+  });
+
+  it('plafonne la réserve à la capacité', () => {
+    const g = SurvivorGame.start(seeded(1));
+    const gain = playCase(g, 20, 'hard');
+    expect(g.state.reserve).toBe(SURVIVOR.ink.capacity);
+    expect(gain).toEqual({ reward: 35, gained: 20 });
     const full = SurvivorGame.start(seeded(1));
-    playCase(full, true, 0);
-    expect(full.state.reserve).toBe(SURVIVOR.ink.capacity);
-    expect(yes.state.results).toEqual([true]);
-    expect(yes.state.totalSpent).toBe(30);
+    expect(playCase(full, 0, 'easy').gained).toBe(0);
+    expect(full.state.reserve).toBe(100);
   });
 
-  it('propose une amélioration toutes les deux cases, à choisir parmi trois', () => {
+  it('enchaîne les cases par un nouveau choix, avec une amélioration toutes les deux cases', () => {
     const g = SurvivorGame.start(seeded(9));
-    playCase(g, true);
-    expect(g.state.phase).toBe('drawing');
-    expect(g.state.caseNo).toBe(2);
-    playCase(g, true);
+    playCase(g);
+    expect(g.state).toMatchObject({ phase: 'choosing', caseNo: 2 });
+    expect(g.state.proposals).toHaveLength(3);
+    playCase(g);
     expect(g.state.phase).toBe('upgrade');
     expect(g.state.offer).toHaveLength(3);
     expect(g.chooseUpgrade('absent')).toBe(false);
     const pick = g.state.offer[0];
     expect(g.chooseUpgrade(pick)).toBe(true);
     expect(g.state.upgrades[pick]).toBe(1);
-    expect(g.state).toMatchObject({ phase: 'drawing', caseNo: 3, offer: [] });
+    expect(g.state).toMatchObject({ phase: 'choosing', caseNo: 3, offer: [] });
+    expect(g.state.proposals).toHaveLength(3);
   });
 
-  it('applique les effets des améliorations: Encrier, Régénération, Narrateur, Joker, Dernier souffle', () => {
+  it('Narrateur ajoute +5 d’encre par exemplaire à la demande choisie', () => {
     const g = SurvivorGame.start(seeded(2));
-    g.state.upgrades = { encrier: 1, regeneration: 1, narrateur: 1, joker: 1, souffle: 1 };
-    g.state.jokers = 2;
-    g.state.emergency = 1;
+    g.state.upgrades = { narrateur: 2 };
+    const medium = g.state.proposals[1];
+    expect(g.rewardOf(medium)).toBe(30);
+    g.state.reserve = 40;
+    g.choose(medium);
+    expect(g.finishCase(pixelsOf(), 10)?.reward).toBe(30);
+    expect(g.state.reserve).toBe(30 + 30);
+  });
+
+  it('applique aussi Encrier et Régénération, sans dépasser la capacité', () => {
+    const g = SurvivorGame.start(seeded(2));
+    g.state.upgrades = { encrier: 1, regeneration: 1 };
     expect(g.capacity).toBe(125);
     g.state.reserve = 50;
-    playCase(g, true, 10);
-    expect(g.state.reserve).toBe(40 + 20 + 5 + 4);
-    expect(g.rewardFor(false)).toBe(5 + 4);
+    expect(playCase(g, 10, 'medium').reward).toBe(20 + 4);
+    expect(g.state.reserve).toBe(40 + 24);
+    const near = SurvivorGame.start(seeded(2));
+    near.state.upgrades = { encrier: 1 };
+    near.state.reserve = 120;
+    playCase(near, 0, 'hard');
+    expect(near.state.reserve).toBe(125);
   });
 
   it('Encrier ajoute sa capacité et l’encre qui va avec', () => {
@@ -373,20 +505,42 @@ describe('déroulement de la partie', () => {
     expect(g.state.reserve).toBe(85);
   });
 
-  it('Joker relance les dés, un nombre limité de fois', () => {
+  it('Joker renouvelle les trois demandes avant de dessiner, un nombre limité de fois', () => {
     const g = SurvivorGame.start(seeded(4));
-    expect(g.replaceConstraint()).toBe(false);
+    expect(g.rerollProposals()).toBe(false);
     g.state.jokers = 2;
-    const before = g.constraint.id;
-    expect(g.replaceConstraint()).toBe(true);
-    expect(g.constraint.id).not.toBe(before);
-        expect(g.state.jokers).toBe(1);
-    g.replaceConstraint();
-    expect(g.replaceConstraint()).toBe(false);
+    const before = [...g.state.proposals];
+    expect(g.rerollProposals()).toBe(true);
+    expect(g.state.proposals).toHaveLength(3);
+    expect(g.state.proposals.some((id, k) => id === before[k])).toBe(false);
+    expect(g.state.jokers).toBe(1);
+    expect(g.state.reserve).toBe(SURVIVOR.ink.start);
+    g.rerollProposals();
+    expect(g.rerollProposals()).toBe(false);
+    expect(g.state.jokers).toBe(0);
+  });
+
+  it('Joker n’agit plus une fois la case commencée', () => {
+    const g = SurvivorGame.start(seeded(4));
+    g.state.jokers = 2;
+    g.choose(g.state.proposals[0]);
+    const chosen = [...g.state.constraintIds];
+    expect(g.rerollProposals()).toBe(false);
+    expect(g.state.jokers).toBe(2);
+    expect(g.state.constraintIds).toEqual(chosen);
+  });
+
+  it('le choix d’amélioration Joker accorde ses charges', () => {
+    const g = SurvivorGame.start(seeded(4));
+    g.state.phase = 'upgrade';
+    g.state.offer = ['joker'];
+    g.chooseUpgrade('joker');
+    expect(g.state.jokers).toBe(SURVIVOR.upgrades.jokerCharges);
   });
 
   it('Dernier souffle ajoute la réserve d’urgence une seule fois', () => {
     const g = SurvivorGame.start(seeded(4));
+    g.choose(g.state.proposals[0]);
     expect(g.useEmergency()).toBe(false);
     g.state.emergency = 1;
     g.state.reserve = 0;
@@ -397,23 +551,24 @@ describe('déroulement de la partie', () => {
 
   it('victoire à la seizième case, avec le bilan de la partie', () => {
     const g = SurvivorGame.start(seeded(11));
-    for (let i = 1; i <= SURVIVOR.totalCases; i++) {
+    for (let i = 1; i <= TOTAL; i++) {
       expect(g.state.outcome).toBeNull();
-      playCase(g, i % 2 === 0, 5);
+      playCase(g, 5, LEVELS[i % 3]);
       if (g.state.phase === 'upgrade') g.chooseUpgrade(g.state.offer[0]);
     }
-    expect(g.state.phase).toBe('finished');
-    expect(g.state.outcome).toBe('victory');
+    expect(g.state).toMatchObject({ phase: 'finished', outcome: 'victory' });
     expect(g.finishedCases).toBe(16);
-    expect(g.respectedCount).toBe(8);
     expect(g.cases).toHaveLength(16);
     expect(g.state.totalSpent).toBe(80);
     expect(Object.keys(g.state.upgrades).length).toBeGreaterThan(0);
     expect(new Set(g.state.constraintIds).size).toBe(16);
+    expect(Object.values(g.chosenByLevel).reduce((a, b) => a + b, 0)).toBe(16);
+    expect(g.chosenByLevel).toEqual({ easy: 5, medium: 6, hard: 5 });
   });
 
   it('défaite: plus d’encre, plus de Mimo gratuit ni de secours, et une case trop vide pour être terminée', () => {
     const g = SurvivorGame.start(seeded(6));
+    g.choose(g.state.proposals[0]);
     const blank = new Uint8Array(WIDTH * HEIGHT);
     expect(g.isStuck(0, false, blank)).toBe(true);
     expect(g.isStuck(30, false, blank)).toBe(false); // il reste de l'encre
@@ -431,6 +586,7 @@ describe('déroulement de la partie', () => {
   it('détecte la défaite avec le vrai éditeur: tout dépenser puis tout effacer', () => {
     const g = SurvivorGame.start(seeded(6));
     g.state.reserve = 3;
+    g.choose(g.state.proposals[0]);
     const s = new EditorSession();
     s.ink = g.rules;
     s.inkBudget = g.state.reserve;
@@ -446,15 +602,15 @@ describe('déroulement de la partie', () => {
 
   it('le coût dépensé sur une case sort de la réserve avant la récompense', () => {
     const g = SurvivorGame.start(seeded(1));
+    g.choose(g.state.proposals[0]);
     const s = new EditorSession();
     s.ink = g.rules;
     s.inkBudget = g.state.reserve;
     s.update({ pen: { size: 6, shape: 'round', texture: 'solid' } });
     line(s, [10, 100], [300, 100]);
     const spent = s.project.ink!.spent;
-    expect(g.finishCase(s.project.pixels, spent)).toBe(true);
-    g.validate(false);
-    expect(g.state.reserve).toBeCloseTo(100 - spent + 5, 6);
+    expect(g.finishCase(s.project.pixels, spent)).not.toBeNull();
+    expect(g.state.reserve).toBeCloseTo(100 - spent + 10, 6);
   });
 });
 
@@ -485,23 +641,111 @@ describe('stockage local', () => {
 
     it('conserve les cases terminées et la progression, puis efface', () => {
       const g = SurvivorGame.start(seeded(8));
-      playCase(g, true, 12);
-      playCase(g, false, 7);
+      playCase(g, 12);
+      playCase(g, 7, 'hard');
       expect(saveRun(g)).toBe(true);
       const back = loadRun()!;
-      expect(back.state.caseNo).toBe(g.state.caseNo);
-      expect(back.state.reserve).toBeCloseTo(g.state.reserve, 6);
+      expect(back.state).toEqual(g.state);
       expect(back.state.phase).toBe('upgrade');
-      expect(back.state.upgrades).toEqual(g.state.upgrades);
       expect(back.cases).toEqual(g.cases);
       expect(store.get('cl.survivor.v1')).not.toMatch(/pixels/);
       clearRun();
       expect(loadRun()).toBeNull();
     });
 
-    it('ignore une sauvegarde illisible', () => {
+    it('reprend le choix en cours: recharger ne renouvelle pas gratuitement les demandes', () => {
+      const g = SurvivorGame.start(seeded(8));
+      g.state.jokers = 1;
+      saveRun(g);
+      expect(loadRun()!.state.proposals).toEqual(g.state.proposals);
+      g.rerollProposals();
+      saveRun(g);
+      const back = loadRun()!;
+      expect(back.state.proposals).toEqual(g.state.proposals);
+      expect(back.state.jokers).toBe(0);
+      expect(back.rerollProposals()).toBe(false);
+    });
+
+    it('reprend la demande choisie, sans brouillon du dessin', () => {
+      const g = SurvivorGame.start(seeded(8));
+      g.choose(g.state.proposals[2]);
+      saveRun(g);
+      const back = loadRun()!;
+      expect(back.state.phase).toBe('drawing');
+      expect(back.constraint?.id).toBe(g.constraint?.id);
+      expect(back.state.proposals).toEqual([]);
+    });
+
+    it('la reprise relit toujours la dernière sauvegarde', () => {
+      const g = SurvivorGame.start(seeded(8));
+      saveRun(g);
+      const first = loadRun()!;
+      playCase(g, 9);
+      saveRun(g);
+      expect(first.state.caseNo).toBe(1);
+      expect(loadRun()!.state.caseNo).toBe(2);
+    });
+
+    it('ignore une sauvegarde illisible ou d’une version inconnue', () => {
       store.set('cl.survivor.v1', '{pas du json');
       expect(loadRun()).toBeNull();
+      store.set('cl.survivor.v1', JSON.stringify({ state: { version: 9 }, cases: [] }));
+      expect(loadRun()).toBeNull();
+    });
+
+    describe('anciennes sauvegardes', () => {
+      const v1 = (over: Partial<RunStateV1>): RunStateV1 => ({
+        version: 1,
+        theme: 'Fausse alerte',
+        caseNo: 1,
+        reserve: 80,
+        upgrades: { plume: 1 },
+        constraintIds: ['45'],
+        results: [],
+        spentPerCase: [],
+        jokers: 1,
+        emergency: 0,
+        phase: 'drawing',
+        offer: [],
+        outcome: null,
+        totalSpent: 0,
+        ...over,
+      });
+      const write = (state: RunStateV1, n: number) => store.set('cl.survivor.v1', JSON.stringify({ state, cases: Array.from({ length: n }, () => encodeCase(pixelsOf())) }));
+
+      it('une case en cours repart sur trois demandes, cases terminées conservées', () => {
+        write(v1({ caseNo: 3, constraintIds: ['12', '31', '45'], results: [true, false], spentPerCase: [10, 20], totalSpent: 30 }), 2);
+        const g = loadRun()!;
+        expect(g.state).toMatchObject({ version: 2, phase: 'choosing', caseNo: 3, reserve: 80, constraintIds: ['12', '31'], totalSpent: 30, jokers: 1 });
+        expect(g.state.proposals).toHaveLength(3);
+        expect(g.cases).toHaveLength(2);
+        expect(JSON.parse(store.get('cl.survivor.v1')!).state.version).toBe(2);
+        expect(loadRun()!.state.proposals).toEqual(g.state.proposals);
+      });
+
+      it('une case terminée mais pas encore validée touche la récompense de sa demande', () => {
+        write(v1({ phase: 'validating', reserve: 60, results: [], spentPerCase: [20], totalSpent: 20 }), 1);
+        const g = loadRun()!;
+        expect(g.state).toMatchObject({ phase: 'choosing', caseNo: 2, constraintIds: ['45'] });
+        expect(g.state.reserve).toBe(60 + 20);
+        expect(g.cases).toHaveLength(1);
+      });
+
+      it('une ancienne demande disparue vaut la récompense facile; la validation de la case 2 mène à l’amélioration', () => {
+        write(v1({ phase: 'validating', caseNo: 2, reserve: 40, constraintIds: ['12', 'intro-3'], results: [true], spentPerCase: [5, 10], totalSpent: 15 }), 2);
+        const g = loadRun()!;
+        expect(g.state.phase).toBe('upgrade');
+        expect(g.state.offer).toHaveLength(3);
+        expect(g.state.reserve).toBe(40 + 10);
+      });
+
+      it('garde un choix d’amélioration et une partie terminée', () => {
+        write(v1({ phase: 'upgrade', caseNo: 2, constraintIds: ['12', '31'], results: [true, true], spentPerCase: [5, 5], offer: ['joker', 'plume'] }), 2);
+        const up = loadRun()!;
+        expect(up.state).toMatchObject({ phase: 'upgrade', caseNo: 2, offer: ['joker', 'plume'] });
+        write(v1({ phase: 'finished', outcome: 'defeat', caseNo: 2, constraintIds: ['12', '31'], results: [true, true], spentPerCase: [5, 5] }), 2);
+        expect(loadRun()!.state).toMatchObject({ phase: 'finished', outcome: 'defeat' });
+      });
     });
   });
 });
