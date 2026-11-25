@@ -21,6 +21,9 @@ describe('routeur par hash', () => {
     ['#/archives', { name: 'archives' }],
     ['#/admin', { name: 'admin' }],
     ['#/lab/survivor', { name: 'survivor' }],
+    ['#/lab/survivor/invite/abc123', { name: 'survivor', invite: 'abc123' }],
+    ['#/lab/survivor/invite', { name: 'survivor' }],
+    ['#/lab/survivor/autre/abc', { name: 'survivor' }],
   ])('analyse %s', (hash, route) => {
     expect(parseHash(hash)).toEqual(route);
   });
@@ -52,6 +55,7 @@ describe('routeur par hash', () => {
       { name: 'reply', id: 'r2' },
       { name: 'finished', id: 'f2' },
       { name: 'survivor' },
+      { name: 'survivor', invite: 'a1b2' },
     ];
     for (const r of routes) expect(parseHash(hrefOf(r))).toEqual(r);
   });

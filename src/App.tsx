@@ -84,7 +84,7 @@ function Screens() {
   if (route.name === 'survivor') {
     return (
       <Suspense fallback={null}>
-        <SurvivorPage />
+        <SurvivorPage invite={route.invite ?? null} />
       </Suspense>
     );
   }

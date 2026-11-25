@@ -18,13 +18,13 @@ export type Route =
   | { name: 'settings' }
   | { name: 'admin' }
   /** Laboratoire (#/lab/survivor): hors navigation, accessible par URL directe seulement. */
-  | { name: 'survivor' };
+  | { name: 'survivor'; invite?: string };
 
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 export function parseHash(hash: string): Route {
   const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean);
-  const [head, arg] = parts;
+  const [head, arg, sub, token] = parts;
   const id = arg && ID.test(arg) ? arg : null;
   switch (head) {
     case 'play':
@@ -59,7 +59,8 @@ export function parseHash(hash: string): Route {
     case 'admin':
       return { name: 'admin' };
     case 'lab':
-      return arg === 'survivor' ? { name: 'survivor' } : { name: 'home' };
+      if (arg !== 'survivor') return { name: 'home' };
+      return sub === 'invite' && token && ID.test(token) ? { name: 'survivor', invite: token } : { name: 'survivor' };
     default:
       return { name: 'home' };
   }
@@ -80,7 +81,7 @@ export function hrefOf(r: Route): string {
     case 'play':
       return r.startId ? `#/play/${r.startId}` : '#/play';
     case 'survivor':
-      return '#/lab/survivor';
+      return r.invite ? `#/lab/survivor/invite/${r.invite}` : '#/lab/survivor';
     case 'draw':
       return r.parentId ? `#/draw/${r.parentId}` : '#/draw';
     default:

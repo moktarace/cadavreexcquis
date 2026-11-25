@@ -11,12 +11,16 @@ import { LEVELS, LEVEL_LABELS, constraintById, diceOf } from './constraints';
 import { exportSurvivorPng } from './exportSheet';
 import { SurvivorGame, type CaseGain } from './game';
 import { clearRun, loadRun, saveRun } from './storage';
+import { InviteView, MultiLab } from './multi/MultiLab';
+import { MODE_BLURBS, MODE_LABELS, type MultiMode } from './multi/types';
 import { UPGRADES, upgradeById } from './upgrades';
 import './survivor.css';
 
 /** Mode expérimental (#/lab/survivor): une BD de 16 cases à finir avant d'être à court d'encre. Hors ligne, sans compte. */
-export default function SurvivorPage() {
+export default function SurvivorPage({ invite = null }: { invite?: string | null }) {
   const [game, setGame] = useState<SurvivorGame | null>(null);
+  // Multijoueur (expérimental): le Solo ci-dessous reste local et hors ligne.
+  const [lab, setLab] = useState<MultiMode | 'invite' | null>(invite ? 'invite' : null);
   const [saved, setSaved] = useState(() => loadRun());
   const [toast, setToast] = useState<string | null>(null);
   const [, bump] = useReducer((n: number) => n + 1, 0);
@@ -49,7 +53,10 @@ export default function SurvivorPage() {
   };
 
   let view;
-  if (!game) view = <Menu saved={saved} onNew={start} onResume={() => saved && setGame(saved)} />;
+  if (!game && lab === 'invite' && invite) {
+    view = <InviteView token={invite} onBack={() => setLab(null)} onDone={(mode) => { location.hash = hrefOf({ name: 'survivor' }); setLab(mode); }} />;
+  } else if (!game && lab && lab !== 'invite') view = <MultiLab mode={lab} onBack={() => setLab(null)} />;
+  else if (!game) view = <Menu saved={saved} onNew={start} onResume={() => saved && setGame(saved)} onLab={setLab} />;
   else if (game.state.phase === 'finished') view = <End game={game} onRestart={start} onMenu={toMenu} />;
   else if (game.state.phase === 'upgrade') view = <UpgradeView game={game} onPick={(id) => game.chooseUpgrade(id) && changed(game)} />;
   else if (game.state.phase === 'choosing') {
@@ -66,11 +73,11 @@ export default function SurvivorPage() {
 
 // ───────────── Menu ─────────────
 
-function Menu({ saved, onNew, onResume }: { saved: SurvivorGame | null; onNew: () => void; onResume: () => void }) {
+function Menu({ saved, onNew, onResume, onLab }: { saved: SurvivorGame | null; onNew: () => void; onResume: () => void; onLab: (mode: MultiMode) => void }) {
   return (
     <div className="app-shell">
       <main>
-        <PageFrame title="Survivor" subtitle="Laboratoire · expérimental" backHref={hrefOf({ name: 'home' })} tone="lavender">
+        <PageFrame title="Survivor" subtitle="Solo, Relay, Duel, Battle · laboratoire" backHref={hrefOf({ name: 'home' })} tone="lavender">
           <ToyCard tone="yellow">
             <p className="plain-text"><strong>{SURVIVOR.totalCases} cases à dessiner avant la panne d’encre.</strong></p>
             <ul className="sv-rules">
@@ -88,6 +95,16 @@ function Menu({ saved, onNew, onResume }: { saved: SurvivorGame | null; onNew: (
               )}
             </div>
             <p className="hint">Tout reste sur cet appareil. Le dessin de la case en cours n’est pas sauvegardé : seules les cases terminées le sont.</p>
+          </ToyCard>
+          <ToyCard tone="lavender" title="Multijoueur · expérimental">
+            <p className="hint">Parties asynchrones sur le serveur (connexion nécessaire). Le dessin multijoueur n’est pas encore disponible.</p>
+            <div className="sv-modes">
+              {(['relay', 'duel', 'battle'] as const).map((m) => (
+                <ToyButton key={m} variant="soft" onClick={() => onLab(m)}>
+                  {MODE_LABELS[m]} · {MODE_BLURBS[m]}
+                </ToyButton>
+              ))}
+            </div>
           </ToyCard>
         </PageFrame>
       </main>
