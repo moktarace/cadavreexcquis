@@ -81,3 +81,8 @@
 .sv-arb__chip--down { background: #ffc0cc; }
 .sv-arb__chip--on { outline: 3px solid var(--ink); outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) { .sv-arb__bar { transition: none; } }
+
+/* Encre bonus (portefeuille, étoile jaune) ≠ encre de dessin (jauge) */
+.sv-bonus { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; font: 800 0.8rem var(--font-body); color: var(--ink); background: var(--lavender-soft); border: 2px dashed var(--ink); border-radius: var(--radius-pill); }
+.sv-shop { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: var(--space-3); }
+.sv-flash { padding: 4px 10px; font: 900 0.8rem var(--font-body); background: var(--yellow); border: 2px solid var(--ink); border-radius: var(--radius-pill); }

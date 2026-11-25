@@ -4,6 +4,23 @@ import { LEVELS, PHASE_LABELS, constraintById, drawProposals, phaseOf, type Leve
 import { inkRulesFor } from './rules';
 import { modifiersOf, offerUpgrades, upgradeById } from './upgrades';
 
+/** Consommables payants (catalogue, prix et effets: serveur, voir 0016). */
+export type ShopItem = 'refill' | 'constraint_reroll' | 'upgrade_reroll' | 'emergency_refill';
+
+/** Achats d'une partie Solo: reçus déjà appliqués (jamais deux fois), consommables utilisés, achat en cours d'envoi. */
+export interface ShopState {
+  applied: string[];
+  bought: ShopItem[];
+  pending: { id: string; item: ShopItem } | null;
+}
+
+/** Reçu délivré par le serveur: seul `effect` (jamais un prix ni un montant choisi ici) pilote l'effet local. */
+export interface PurchaseReceipt {
+  purchase: string;
+  item: ShopItem;
+  effect: number | null;
+}
+
 export type RunPhase = 'choosing' | 'drawing' | 'upgrade' | 'finished';
 
 /** Tout ce qu'il faut pour reprendre une partie (les cases terminées sont conservées à part, en pixels). */
@@ -27,6 +44,9 @@ export interface RunState {
   offer: string[];
   outcome: 'victory' | 'defeat' | null;
   totalSpent: number;
+  /** Identifiant stable de la partie Solo (limites d'achat côté serveur); ajouté aux anciennes sauvegardes au chargement. */
+  gameId?: string;
+  shop?: ShopState;
 }
 
 /** Ancien format (contrainte imposée puis auto-validée), lu seulement pour reprendre une partie existante. */
@@ -87,6 +107,8 @@ export class SurvivorGame {
         offer: [],
         outcome: null,
         totalSpent: 0,
+        gameId: crypto.randomUUID(),
+        shop: { applied: [], bought: [], pending: null },
       },
       rng,
     );
@@ -148,6 +170,57 @@ export class SurvivorGame {
   rewardOf(id: string): number {
     const level = constraintById(id)?.level ?? LEVELS[0];
     return SURVIVOR.rewards[level] + this.modifiers.reward;
+  }
+
+  get gameId(): string {
+    return (this.state.gameId ??= crypto.randomUUID());
+  }
+
+  get shop(): ShopState {
+    return (this.state.shop ??= { applied: [], bought: [], pending: null });
+  }
+
+  /** Le consommable a-t-il un sens maintenant? (indicatif: le serveur ne voit pas la partie Solo) */
+  canUse(item: ShopItem, minMissing = 20): boolean {
+    const s = this.state;
+    if (this.shop.bought.includes(item)) return false;
+    if (item === 'refill') return s.phase === 'choosing' && this.capacity - s.reserve >= minMissing;
+    if (item === 'constraint_reroll') return s.phase === 'choosing';
+    if (item === 'upgrade_reroll') return s.phase === 'upgrade' && offerUpgrades(s.upgrades, this.rng, SURVIVOR.offerSize, s.offer).length === SURVIVOR.offerSize;
+    return s.phase === 'drawing' && s.emergency === 0;
+  }
+
+  beginPurchase(id: string, item: ShopItem) {
+    this.shop.pending = { id, item };
+  }
+
+  clearPending() {
+    this.shop.pending = null;
+  }
+
+  /**
+   * Applique un achat confirmé par le serveur, au plus une fois par reçu (rechargement, relance, récupération).
+   * Les anciens tirages ne bougent pas; un Joker payant ne consomme aucune charge acquise.
+   */
+  applyPurchase(r: PurchaseReceipt): boolean {
+    const s = this.state;
+    const shop = this.shop;
+    if (shop.applied.includes(r.purchase)) {
+      if (shop.pending?.id === r.purchase) shop.pending = null;
+      return false;
+    }
+    if (r.item === 'refill') s.reserve = Math.min(this.capacity, s.reserve + (r.effect ?? 0));
+    else if (r.item === 'emergency_refill') s.reserve += r.effect ?? 0;
+    else if (r.item === 'constraint_reroll' && s.phase === 'choosing') {
+      s.proposals = drawProposals(s.caseNo, SURVIVOR.totalCases, s.constraintIds, this.rng, s.proposals);
+    } else if (r.item === 'upgrade_reroll' && s.phase === 'upgrade') {
+      const next = offerUpgrades(s.upgrades, this.rng, SURVIVOR.offerSize, s.offer);
+      if (next.length === SURVIVOR.offerSize) s.offer = next;
+    }
+    shop.applied.push(r.purchase);
+    shop.bought.push(r.item);
+    if (shop.pending?.id === r.purchase) shop.pending = null;
+    return true;
   }
 
   /** Une case se termine dès qu'elle contient assez de dessin. */

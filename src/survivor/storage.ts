@@ -57,8 +57,12 @@ export function loadRun(rng?: () => number): SurvivorGame | null {
     if (!old && saved.state.version !== 2) return null;
     const s = game.state;
     if (s.phase === 'choosing' && !s.proposals.every(constraintById)) return null;
+    // Anciennes sauvegardes: identifiant de partie et état des achats ajoutés sans rien perdre.
+    const upgraded = !s.gameId || !s.shop;
+    void game.gameId;
+    void game.shop;
     game.cases = saved.cases.map((c) => decodeCase(c, PIXELS));
-    if (old) saveRun(game);
+    if (old || upgraded) saveRun(game);
     return game;
   } catch {
     return null;

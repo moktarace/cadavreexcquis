@@ -64,8 +64,8 @@ export function modifiersOf(owned: Owned): Modifiers {
 }
 
 /** Tire `count` améliorations différentes parmi celles qui peuvent encore être prises. */
-export function offerUpgrades(owned: Owned, rng: () => number, count: number = SURVIVOR.offerSize): UpgradeId[] {
-  const pool = UPGRADES.filter((u) => (owned[u.id] ?? 0) < u.max).map((u) => u.id);
+export function offerUpgrades(owned: Owned, rng: () => number, count: number = SURVIVOR.offerSize, exclude: readonly string[] = []): UpgradeId[] {
+  const pool = UPGRADES.filter((u) => (owned[u.id] ?? 0) < u.max && !exclude.includes(u.id)).map((u) => u.id);
   const out: UpgradeId[] = [];
   while (out.length < count && pool.length) out.push(pool.splice(Math.min(pool.length - 1, Math.floor(rng() * pool.length)), 1)[0]);
   return out;

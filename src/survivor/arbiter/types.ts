@@ -79,7 +79,7 @@ export interface Hub {
 
 export interface Wallet {
   balance: number;
-  history: { amount: number; reason: 'arbiter_vote' | 'arbiter_complete' | 'vote_received'; at: string }[];
+  history: { amount: number; reason: 'arbiter_vote' | 'arbiter_complete' | 'vote_received' | 'purchase'; item: string | null; at: string }[];
 }
 
 export const SOURCE_LABELS: Record<HubMine['source'], string> = { solo: 'Solo', relay: 'Relay', battle: 'Battle', duel: 'Duel' };
@@ -95,7 +95,19 @@ export const REASON_LABELS: Record<Wallet['history'][number]['reason'], string> 
   arbiter_vote: 'Case jugée',
   arbiter_complete: 'Arbitrage complet',
   vote_received: 'Upvote reçu',
+  purchase: 'Achat',
 };
+
+/** Libellé d'une ligne du portefeuille: « Recharge utilisée », « Joker utilisé », « Upvote reçu »… */
+export const ITEM_USED: Record<string, string> = {
+  refill: 'Recharge utilisée',
+  constraint_reroll: 'Joker utilisé',
+  upgrade_reroll: 'Second choix utilisé',
+  emergency_refill: 'Dernière chance utilisée',
+};
+
+export const historyLabel = (h: Wallet['history'][number]) => (h.reason === 'purchase' ? ITEM_USED[h.item ?? ''] ?? REASON_LABELS.purchase : REASON_LABELS[h.reason]);
+export const signed = (n: number) => `${n > 0 ? '+' : '−'}${Math.abs(n)}`;
 
 export const NARRATIVE_LABELS: Record<'win' | 'loss' | 'tie', string> = {
   win: 'Résultat narratif: tu l’emportes',

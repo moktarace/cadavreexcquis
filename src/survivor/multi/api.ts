@@ -52,6 +52,14 @@ const MESSAGES: Record<string, string> = {
   INVALID_VOTE: 'Vote invalide.',
   INCOMPLETE: 'Il reste des cases à juger.',
   BD_UNAVAILABLE: 'Cette BD n’est plus disponible.',
+  INSUFFICIENT_FUNDS: 'Encre bonus insuffisante: rien n’a été débité.',
+  PURCHASE_LIMIT: 'Limite d’achats atteinte pour cette partie.',
+  ALREADY_BOUGHT: 'Ce consommable a déjà servi dans cette partie.',
+  SHOP_NOT_ALLOWED: 'Pas d’achat dans ce mode: les deux joueurs jouent à armes égales.',
+  NOT_AVAILABLE: 'Ce consommable n’est pas utilisable à cette étape.',
+  NO_NEW_OFFER: 'Aucune autre amélioration à proposer.',
+  UNKNOWN_ITEM: 'Consommable inconnu.',
+  INVALID_PURCHASE: 'Achat invalide.',
 };
 
 function db() {

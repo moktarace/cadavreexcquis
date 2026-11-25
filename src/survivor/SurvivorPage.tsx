@@ -1,4 +1,5 @@
 import { useEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
+import { ApiError } from '../backend/api';
 import { hrefOf } from '../app/router';
 import { HEIGHT, WIDTH } from '../editor/palette';
 import { indexedToRgba } from '../editor/render';
@@ -9,13 +10,15 @@ import { ToyButton, ToyCard, ToyDialog } from '../ui';
 import { SURVIVOR } from './config';
 import { LEVELS, LEVEL_LABELS, constraintById, diceOf } from './constraints';
 import { exportSurvivorPng } from './exportSheet';
-import { SurvivorGame, type CaseGain } from './game';
+import { SurvivorGame, type CaseGain, type ShopItem } from './game';
 import { clearRun, loadRun, saveRun } from './storage';
 import { ArbiterPage } from './arbiter/ArbiterPage';
 import { newSoloUpload, submitSolo } from './arbiter/api';
 import { InviteView, MultiLab } from './multi/MultiLab';
 import { MODE_BLURBS, MODE_LABELS, type MultiMode } from './multi/types';
 import { InkGauge, UpgradeChoice } from './parts';
+import { buyItem, checkPurchase, walletIfSession, type ShopInfo } from './shop/api';
+import { BonusPill, ShopOffer, useShop } from './shop/ShopOffer';
 import { UPGRADES } from './upgrades';
 import './survivor.css';
 
@@ -27,6 +30,7 @@ export default function SurvivorPage({ invite = null }: { invite?: string | null
   const [saved, setSaved] = useState(() => loadRun());
   const [toast, setToast] = useState<string | null>(null);
   const [, bump] = useReducer((n: number) => n + 1, 0);
+  const shopInfo = useShop('solo', game?.gameId, { needSession: true });
 
   // Gain d'encre: un bref message qui ne bloque rien.
   useEffect(() => {
@@ -55,6 +59,54 @@ export default function SurvivorPage({ invite = null }: { invite?: string | null
     setToast(`+${Math.round(gain.gained)} d’encre${gain.gained < gain.reward ? ' · réserve pleine' : ''}`);
   };
 
+  // Un achat dont la réponse s'est perdue (fermeture, réseau): on récupère son reçu et on l'applique une seule fois.
+  const pendingId = game?.shop.pending?.id;
+  useEffect(() => {
+    if (!game || !pendingId) return;
+    let live = true;
+    checkPurchase('solo', game.gameId, pendingId).then(
+      (r) => {
+        if (!live) return;
+        if (r) game.applyPurchase({ purchase: r.purchase, item: r.item, effect: r.effect });
+        else game.clearPending();
+        changed(game);
+        void shopInfo.reload();
+      },
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game, pendingId]);
+
+  const soloShop = (g: SurvivorGame): SoloShop => {
+    const buy = (item: ShopItem) => async (id: string) => {
+      g.beginPurchase(id, item);
+      saveRun(g);
+      try {
+        const r = await buyItem('solo', g.gameId, item, id);
+        g.applyPurchase({ purchase: r.purchase, item, effect: r.effect });
+        changed(g);
+      } catch (e) {
+        // Refus définitif: rien n'a été débité. Erreur réseau ou serveur: l'achat reste « en cours » pour être récupéré.
+        if (e instanceof ApiError && e.code !== 'SERVER') {
+          g.clearPending();
+          saveRun(g);
+        }
+        throw e;
+      }
+    };
+    return {
+      info: shopInfo.info,
+      reload: () => void shopInfo.reload(),
+      buy,
+      offer: (item, extra) => (
+        <ShopOffer item={item} info={shopInfo.info} available={g.canUse(item, shopInfo.info?.rules.items.refill.min_missing)} perform={async (id) => { await buy(item)(id); extra?.(); }} onDone={() => void shopInfo.reload()} />
+      ),
+    };
+  };
+
   let view;
   if (!game && lab === 'invite' && invite) {
     view = <InviteView token={invite} onBack={() => setLab(null)} onDone={(mode) => { location.hash = hrefOf({ name: 'survivor' }); setLab(mode); }} />;
@@ -62,10 +114,10 @@ export default function SurvivorPage({ invite = null }: { invite?: string | null
   else if (!game && lab && lab !== 'invite' && lab !== 'arbiter') view = <MultiLab mode={lab} onBack={() => setLab(null)} />;
   else if (!game) view = <Menu saved={saved} onNew={start} onResume={() => saved && setGame(saved)} onLab={setLab} />;
   else if (game.state.phase === 'finished') view = <End game={game} onRestart={start} onMenu={toMenu} />;
-  else if (game.state.phase === 'upgrade') view = <UpgradeView game={game} onPick={(id) => game.chooseUpgrade(id) && changed(game)} />;
+  else if (game.state.phase === 'upgrade') view = <UpgradeView game={game} shop={soloShop(game)} onPick={(id) => game.chooseUpgrade(id) && changed(game)} />;
   else if (game.state.phase === 'choosing') {
-    view = <ChooseView game={game} onPick={(id) => game.choose(id) && changed(game)} onJoker={() => game.rerollProposals() && changed(game)} onMenu={toMenu} />;
-  } else view = <Play key={game.state.caseNo} game={game} onChange={() => changed(game)} onFinished={(gain) => finished(game, gain)} onQuit={toMenu} />;
+    view = <ChooseView game={game} shop={soloShop(game)} onPick={(id) => game.choose(id) && changed(game)} onJoker={() => game.rerollProposals() && changed(game)} onMenu={toMenu} />;
+  } else view = <Play key={game.state.caseNo} game={game} shop={soloShop(game)} onChange={() => changed(game)} onFinished={(gain) => finished(game, gain)} onQuit={toMenu} />;
 
   return (
     <>
@@ -75,9 +127,22 @@ export default function SurvivorPage({ invite = null }: { invite?: string | null
   );
 }
 
+/** Achats du Solo: le serveur délivre un reçu, le moteur local l'applique une seule fois; la partie reste jouable hors ligne. */
+interface SoloShop {
+  info: ShopInfo | null;
+  reload: () => void;
+  buy: (item: ShopItem) => (purchaseId: string) => Promise<void>;
+  offer: (item: ShopItem, extra?: () => void) => React.ReactNode;
+}
+
 // ───────────── Menu ─────────────
 
 function Menu({ saved, onNew, onResume, onLab }: { saved: SurvivorGame | null; onNew: () => void; onResume: () => void; onLab: (mode: MultiMode | 'arbiter') => void }) {
+  const [bonus, setBonus] = useState<number | null>(null);
+  // Solde seulement si un compte existe déjà; hors ligne, le menu reste identique.
+  useEffect(() => {
+    walletIfSession().then((w) => setBonus(w ? w.balance : null), () => undefined);
+  }, []);
   return (
     <div className="app-shell">
       <main>
@@ -100,6 +165,7 @@ function Menu({ saved, onNew, onResume, onLab }: { saved: SurvivorGame | null; o
             </div>
             <p className="hint">Tout reste sur cet appareil. Le dessin de la case en cours n’est pas sauvegardé : seules les cases terminées le sont.</p>
           </ToyCard>
+          {bonus !== null && <div className="sv-shop"><BonusPill balance={bonus} /></div>}
           <ToyCard tone="pink" title="Arbitre · expérimental">
             <p className="hint">Pas envie de dessiner ? Lis les BD des autres, juge si la contrainte est respectée (pas le talent) et gagne de l’encre bonus. Connexion nécessaire.</p>
             <ToyButton variant="soft" icon="eye" onClick={() => onLab('arbiter')}>Arbitre</ToyButton>
@@ -132,7 +198,7 @@ function PixelThumb({ pixels, label }: { pixels: Uint8Array; label: string }) {
 
 // ───────────── Une case ─────────────
 
-function Play({ game, onChange, onFinished, onQuit }: { game: SurvivorGame; onChange: () => void; onFinished: (gain: CaseGain) => void; onQuit: () => void }) {
+function Play({ game, shop, onChange, onFinished, onQuit }: { game: SurvivorGame; shop: SoloShop; onChange: () => void; onFinished: (gain: CaseGain) => void; onQuit: () => void }) {
   const [session] = useState(() => {
     const s = new EditorSession();
     s.ink = game.rules;
@@ -197,6 +263,7 @@ function Play({ game, onChange, onFinished, onQuit }: { game: SurvivorGame; onCh
             {s.emergency > 0 && session.inkLeft < 10 && (
               <ToyButton variant="danger" size="s" icon="alert" onClick={emergency}>Dernier souffle +{SURVIVOR.upgrades.dernierSouffle}</ToyButton>
             )}
+            {session.inkLeft < 10 && shop.info?.allowed && game.canUse('emergency_refill') && shop.offer('emergency_refill', () => { session.inkBudget = game.state.reserve; })}
             {session.inkLeft < SURVIVOR.ink.minPlayable && <span className="sv-empty">Plus d’encre !</span>}
           </div>
           {notice && <p className="sv-notice" role="status">{notice}</p>}
@@ -224,15 +291,22 @@ function Play({ game, onChange, onFinished, onQuit }: { game: SurvivorGame; onCh
 
 // ───────────── Choix de la demande ─────────────
 
-function ChooseView({ game, onPick, onJoker, onMenu }: { game: SurvivorGame; onPick: (id: string) => void; onJoker: () => void; onMenu: () => void }) {
+function ChooseView({ game, shop, onPick, onJoker, onMenu }: { game: SurvivorGame; shop: SoloShop; onPick: (id: string) => void; onJoker: () => void; onMenu: () => void }) {
   const s = game.state;
   return (
     <div className="app-shell">
       <main>
         <PageFrame title={`Case ${s.caseNo}/${SURVIVOR.totalCases}`} subtitle={`${game.phaseLabel} · ${s.theme}`} tone="lavender" right={<span />}>
           <div className="sv-choose-gauge">
-            <InkGauge left={s.reserve} capacity={game.capacity} pending={0} />
+            <InkGauge left={s.reserve} capacity={game.capacity} pending={0} label="Encre de dessin" />
           </div>
+          {shop.info?.allowed && (
+            <div className="sv-shop">
+              <BonusPill balance={shop.info.balance} />
+              {shop.offer('refill')}
+              {shop.offer('constraint_reroll')}
+            </div>
+          )}
           <p className="sv-lead">L’éditeur a trois demandes. Laquelle glisses-tu dans ton histoire ?</p>
           <div className="sv-picks">
             {s.proposals.map((id) => {
@@ -259,13 +333,14 @@ function ChooseView({ game, onPick, onJoker, onMenu }: { game: SurvivorGame; onP
 
 // ───────────── Choix d'une amélioration ─────────────
 
-function UpgradeView({ game, onPick }: { game: SurvivorGame; onPick: (id: string) => void }) {
+function UpgradeView({ game, shop, onPick }: { game: SurvivorGame; shop: SoloShop; onPick: (id: string) => void }) {
   const s = game.state;
   return (
     <div className="app-shell">
       <main>
         <PageFrame title="Une amélioration !" subtitle={`Après la case ${s.caseNo} · encre ${Math.ceil(s.reserve)} / ${game.capacity}`} tone="yellow" right={<span />}>
           <UpgradeChoice offer={s.offer} owned={s.upgrades} onPick={onPick} />
+          {shop.info?.allowed && <div className="sv-shop">{shop.offer('upgrade_reroll')}</div>}
         </PageFrame>
       </main>
     </div>

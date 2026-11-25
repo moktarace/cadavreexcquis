@@ -4,8 +4,9 @@ import { PageFrame } from '../../pages/shared';
 import { PixelIcon, ToyButton, ToyCard } from '../../ui';
 import { constraintById, diceOf } from '../constraints';
 import { useImages } from '../multi/MultiPlay';
+import { BonusPill } from '../shop/ShopOffer';
 import { abandonArbitration, answerConsent, arbitrateNext, castVote, currentArbitration, finishArbitration, flagArbitration, fetchHub, fetchWallet, submitGameBd } from './api';
-import { BD_STATUS_LABELS, NARRATIVE_LABELS, REASON_LABELS, SOURCE_LABELS, type ArbResult, type Arbitration, type FlagCategory, type Hub, type Vote, type Wallet } from './types';
+import { BD_STATUS_LABELS, NARRATIVE_LABELS, SOURCE_LABELS, historyLabel, signed, type ArbResult, type Arbitration, type FlagCategory, type Hub, type Vote, type Wallet } from './types';
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : 'Erreur inconnue.');
 
@@ -86,7 +87,7 @@ export function ArbiterPage({ onBack }: { onBack: () => void }) {
   return (
     <Shell title="Arbitre" subtitle="Lis les BD des autres et juge les contraintes">
       <ToyCard tone="yellow">
-        <p className="plain-text"><strong>Encre bonus : {wallet?.balance ?? hub?.balance ?? '…'}</strong></p>
+        <p className="plain-text"><BonusPill balance={wallet?.balance ?? hub?.balance ?? 0} /></p>
         <p className="hint">Juge la contrainte, pas le talent du dessinateur. Un dessin rudimentaire, un Mimo ou une interprétation drôle sont valables s’ils répondent à la contrainte.</p>
         {hub && (
           <>
@@ -160,13 +161,13 @@ export function ArbiterPage({ onBack }: { onBack: () => void }) {
 
       {wallet && wallet.history.length > 0 && (
         <section className="sv-lab-section">
-          <h2 className="sv-lab-title">Dernières encres bonus</h2>
+          <h2 className="sv-lab-title">Gains et dépenses d’encre bonus</h2>
           <ul className="sv-stats">
             {wallet.history.slice(0, 8).map((h, i) => (
-              <li key={i}>+{h.amount} · {REASON_LABELS[h.reason]}</li>
+              <li key={i}>{signed(h.amount)} · {historyLabel(h)}</li>
             ))}
           </ul>
-          <p className="hint">Cette encre ne se dépense pas encore.</p>
+          <p className="hint">Dépense-la pendant une partie Solo ou Relay (Recharge, Joker, Second choix, Dernière chance); elle n’est jamais obligatoire.</p>
         </section>
       )}
     </Shell>

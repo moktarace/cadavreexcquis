@@ -12,6 +12,9 @@ import { nonWhite, stuckNow } from '../game';
 import { duelVerdict, submitGameBd } from '../arbiter/api';
 import { NARRATIVE_LABELS, type NarrativeResult } from '../arbiter/types';
 import { InkGauge, UpgradeChoice } from '../parts';
+import { buyItem, type ShopInfo } from '../shop/api';
+import { BonusPill, ShopOffer, useShop } from '../shop/ShopOffer';
+import type { ShopItem } from '../game';
 import { inkRulesFor } from '../rules';
 import { UPGRADES, modifiersOf } from '../upgrades';
 import { declareStuck, extendReservation, fetchState, pickConstraint, playEmergency, playJoker, chooseUpgrade, setDemands, signedUrls, submitCase, uploadCaseImage } from './api';
@@ -21,8 +24,22 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : 'Erreur inco
 const EXTEND_EVERY_MS = 4 * 60_000;
 
 /** Parties multijoueurs jouables (Relay, Duel, Battle): mêmes éditeur, jauge et améliorations que le Solo; le serveur décide de tout le reste. */
+/** Consommables d'une partie en équipe: le serveur débite l'acheteur seul et renvoie l'état confirmé. */
+type Offer = (item: ShopItem, available?: boolean) => React.ReactNode;
+
 export function MultiPlay({ gameId, onBack, onNext }: { gameId: string; onBack: () => void; onNext?: () => void }) {
   const [st, setSt] = useState<MpState | null>(null);
+  const shop = useShop('game', gameId);
+  const offer: Offer = (item, available = true) => (
+    <ShopOffer
+      item={item}
+      info={shop.info}
+      available={available}
+      team={st?.game.mode === 'relay'}
+      perform={async (id) => { const r = await buyItem('game', gameId, item, id); if (r.state) setSt(r.state); }}
+      onDone={() => void shop.reload()}
+    />
+  );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -67,13 +84,14 @@ export function MultiPlay({ gameId, onBack, onNext }: { gameId: string; onBack: 
 
   if (ended) return <Finished st={st} onBack={onBack} onNext={onNext} />;
   if (!st.acting || !run) return <Waiting st={st} error={error} onRefresh={() => void refresh()} onBack={onBack} onNext={onNext} />;
-  if (run.step === 'choosing' && run.pick) return <DrawCase key={`${run.position}-${run.pick}`} st={st} onState={(s) => setSt(s)} onResync={refresh} onAct={act} onBack={onBack} />;
-  if (run.step === 'choosing') return <Pick st={st} busy={busy} error={error} onAct={act} onBack={onBack} />;
+  if (run.step === 'choosing' && run.pick) return <DrawCase key={`${run.position}-${run.pick}`} st={st} offer={offer} shop={shop.info} onState={(s) => setSt(s)} onResync={refresh} onAct={act} onBack={onBack} />;
+  if (run.step === 'choosing') return <Pick st={st} offer={offer} shop={shop.info} busy={busy} error={error} onAct={act} onBack={onBack} />;
   if (run.step === 'upgrade') {
     return (
       <Frame title="Une amélioration !" subtitle={g.mode === 'relay' ? 'Amélioration commune à toute la BD' : `Après ta case ${run.cases_done}`} onBack={onBack}>
         <Standings st={st} />
         <UpgradeChoice offer={run.offer} owned={run.upgrades} busy={busy} onPick={(id) => void act(() => chooseUpgrade(gameId, id))} />
+        {shop.info?.allowed && <div className="sv-shop">{offer('upgrade_reroll')}</div>}
         {error && <p className="sv-notice sv-notice--error" role="alert">{error}</p>}
       </Frame>
     );
@@ -113,7 +131,7 @@ function Standings({ st }: { st: MpState }) {
 
 // ───────────── Choix de la demande ─────────────
 
-function Pick({ st, busy, error, onAct, onBack }: { st: MpState; busy: boolean; error: string | null; onAct: (a: () => Promise<MpResult>) => Promise<void>; onBack: () => void }) {
+function Pick({ st, offer, shop, busy, error, onAct, onBack }: { st: MpState; offer: Offer; shop: ShopInfo | null; busy: boolean; error: string | null; onAct: (a: () => Promise<MpResult>) => Promise<void>; onBack: () => void }) {
   const g = st.game;
   const run = st.run!;
   const lead =
@@ -125,6 +143,13 @@ function Pick({ st, busy, error, onAct, onBack }: { st: MpState; busy: boolean; 
   return (
     <Frame title={`Case ${run.position}/${g.total_cases}`} subtitle={`${PHASE_LABELS[phaseOf(run.position, g.total_cases)]} · ${g.theme}`} onBack={onBack}>
       <Standings st={st} />
+      {shop?.allowed && (
+        <div className="sv-shop">
+          <BonusPill balance={shop.balance} />
+          {offer('refill', run.capacity - run.reserve >= (shop.rules.items.refill.min_missing ?? 20))}
+          {offer('constraint_reroll')}
+        </div>
+      )}
       <p className="sv-lead">{lead}</p>
       <div className="sv-picks">
         {run.proposals.map((p) => {
@@ -151,7 +176,7 @@ function Pick({ st, busy, error, onAct, onBack }: { st: MpState; busy: boolean; 
 
 // ───────────── Dessin d'une case ─────────────
 
-function DrawCase({ st, onState, onResync, onAct, onBack }: { st: MpState; onState: (s: MpState) => void; onResync: () => Promise<void>; onAct: (a: () => Promise<MpResult>) => Promise<void>; onBack: () => void }) {
+function DrawCase({ st, offer, shop, onState, onResync, onAct, onBack }: { st: MpState; offer: Offer; shop: ShopInfo | null; onState: (s: MpState) => void; onResync: () => Promise<void>; onAct: (a: () => Promise<MpResult>) => Promise<void>; onBack: () => void }) {
   const g = st.game;
   const run = st.run!;
   const [session] = useState(() => {
@@ -167,6 +192,10 @@ function DrawCase({ st, onState, onResync, onAct, onBack }: { st: MpState; onSta
   const stuckSent = useRef(false);
   const lastBeat = useRef(Date.now());
   const asked = constraintById(run.pick ?? '');
+  // Réserve de l'éditeur alignée sur l'état confirmé par le serveur (Dernier souffle, Dernière chance): le dessin et les dépenses de la case restent.
+  useEffect(() => {
+    session.inkBudget = run.reserve;
+  }, [run.reserve, session]);
   const reward = run.proposals.find((p) => p.id === run.pick)?.reward ?? 0;
 
   // Panne d'encre: déclarée une fois; le serveur refuse tant qu'un secours existe.
@@ -240,6 +269,7 @@ function DrawCase({ st, onState, onResync, onAct, onBack }: { st: MpState; onSta
           {rival && <InkGauge left={rival.reserve} capacity={rival.capacity} rival label={`Réserve de ${rival.nickname ?? 'l’adversaire'}`} />}
           <div className="sv-brief__tools">
             {g.seconds_left !== null && <span className="sv-empty">{g.mode === 'relay' ? 'Réservation' : 'Délai'} : {formatRemaining(g.seconds_left)}</span>}
+            {session.inkLeft < 10 && run.emergency === 0 && shop?.allowed && offer('emergency_refill')}
             {run.emergency > 0 && session.inkLeft < 10 && (
               <ToyButton variant="danger" size="s" icon="alert" onClick={emergency}>Dernier souffle +{SURVIVOR.upgrades.dernierSouffle}</ToyButton>
             )}

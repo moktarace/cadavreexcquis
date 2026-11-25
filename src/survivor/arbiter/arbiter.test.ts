@@ -117,7 +117,7 @@ describe('présentation', () => {
   it('libellés pour chaque source, état et raison', () => {
     expect(Object.keys(SOURCE_LABELS).sort()).toEqual(['battle', 'duel', 'relay', 'solo']);
     expect(Object.keys(BD_STATUS_LABELS)).toHaveLength(4);
-    expect(Object.keys(REASON_LABELS).sort()).toEqual(['arbiter_complete', 'arbiter_vote', 'vote_received']);
+    expect(Object.keys(REASON_LABELS).sort()).toEqual(['arbiter_complete', 'arbiter_vote', 'purchase', 'vote_received']);
   });
 });
 

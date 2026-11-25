@@ -2128,4 +2128,228 @@ await check('droits: nouvelles fonctions internes fermées aux clients et à ano
   await expectErr('NOT_AUTHENTICATED', () => db.query('select survivor_hub()'));
 });
 
+
+// ───────────── Survivor boutique d'encre bonus (0016) ─────────────
+for (const nme of ['sh1', 'sh2', 'sh3', 'sh4', 'sh5', 'sh6', 'sh7', 'sh8']) {
+  const [{ id }] = (await db.query('insert into auth.users default values returning id')).rows;
+  sv[nme] = id;
+}
+let keyN = 0;
+const fund = (u, n) => db.query("insert into survivor_ink_ledger(user_id, amount, reason, idempotency_key) values ($1, $2, 'arbiter_vote', $3)", [sv[u], n, `fund:${++keyN}`]);
+const buy = async (u, scope, game, item, id = uuid()) => { await db.query('delete from survivor_rate_limits'); return rpc(u, 'survivor_buy', scope, game, item, id); };
+const ledgerCount = async (u) => (await row('select count(*)::int n from survivor_ink_ledger where user_id=$1', [sv[u]])).n;
+const shopRelay = async (a) => {
+  await db.query("update survivor_games set status='abandoned', ended_reason='expired', finished_at=now() where mode='relay' and status='active'");
+  return gv(await rpc(a, 'survivor_matchmake', 'relay')).id;
+};
+const setRun = (g, set) => db.query(`update survivor_runs set ${set} where game_id=$1 and user_id is null`, [g]);
+const runNow = async (u, g) => (await state(u, g)).run;
+
+await check('boutique: catalogue serveur, registre ouvert aux dépenses sans perdre l’historique, solde jamais négatif', async () => {
+  const r = (await row('select survivor_shop_rules() r')).r;
+  const it = r.items;
+  if (it.refill.price !== 40 || it.refill.effect !== 20 || it.refill.min_missing !== 20 || it.constraint_reroll.price !== 30 || it.upgrade_reroll.price !== 25
+    || it.emergency_refill.price !== 60 || it.emergency_refill.effect !== 25 || r.modes.solo.max_purchases !== 2 || r.modes.relay.max_purchases !== 3 || r.modes.duel || r.modes.battle) throw new Error(JSON.stringify(r));
+  const before = (await row("select count(*)::int n, coalesce(sum(amount), 0)::int s from survivor_ink_ledger where amount > 0")).n;
+  if (before < 1) throw new Error('historique des gains conservé');
+  await expectErr('check constraint', () => db.query("insert into survivor_ink_ledger(user_id, amount, reason, idempotency_key) values ($1, 5, 'purchase', 'k1')", [sv.sh1]));
+  await expectErr('check constraint', () => db.query("insert into survivor_ink_ledger(user_id, amount, reason, item, game_id, idempotency_key) values ($1, -5, 'arbiter_vote', 'refill', gen_random_uuid(), 'k2')", [sv.sh1]));
+  await expectErr('check constraint', () => db.query("insert into survivor_ink_ledger(user_id, amount, reason, idempotency_key) values ($1, 0, 'arbiter_vote', 'k3')", [sv.sh1]));
+  await expectErr('check constraint', () => db.query("insert into survivor_ink_ledger(user_id, amount, reason, item, game_id, idempotency_key) values ($1, -5, 'purchase', 'refill', gen_random_uuid(), 'k4')", [sv.sh1])); // solde nul
+});
+await check('boutique: aucune écriture client, achats et portefeuilles des autres illisibles', async () => {
+  await expectErr('row-level security', () => as(sv.sh1, "insert into survivor_purchases(id, user_id, scope, game_id, item, price, ledger_id) values (gen_random_uuid(), $1, 'solo', gen_random_uuid(), 'refill', 1, gen_random_uuid())", [sv.sh1]));
+  await expectErr('row-level security', () => as(sv.sh1, "insert into survivor_ink_ledger(user_id, amount, reason, item, game_id, idempotency_key) values ($1, -1, 'purchase', 'refill', gen_random_uuid(), 'zz')", [sv.sh1]));
+  if ((await as(sv.sh1, 'select * from survivor_purchases')).length || (await as(sv.sh1, 'select * from survivor_solo_games')).length) throw new Error('tables lisibles');
+  for (const f of [`survivor_receipt(null, false, '${sv.sh1}'::uuid)`, "survivor_draw_offer_salt(1, '{}'::jsonb, 'x', '[]'::jsonb)"]) await expectErr('permission denied', () => as(sv.sh1, `select ${f}`));
+  await expectErr('permission denied', () => as(null, "select survivor_shop_rules()"));
+});
+
+await check('Solo: achat confirmé par un reçu serveur, idempotent, débit unique; effet décidé par le serveur', async () => {
+  await fund('sh1', 200);
+  const game = uuid(), id = uuid();
+  const sh = await rpc('sh1', 'survivor_shop', 'solo', game);
+  if (!sh.allowed || sh.balance !== 200 || sh.remaining !== 2 || sh.mode !== 'solo') throw new Error(JSON.stringify(sh));
+  const a = await buy('sh1', 'solo', game, 'refill', id);
+  if (a.price !== 40 || a.effect !== 20 || a.balance !== 160 || a.replay !== false || a.item !== 'refill') throw new Error(JSON.stringify(a));
+  const b = await buy('sh1', 'solo', game, 'refill', id);
+  if (!b.replay || b.balance !== 160 || b.purchase !== a.purchase) throw new Error('rejeu non idempotent');
+  const n = (await row("select count(*)::int n from survivor_ink_ledger where user_id=$1 and reason='purchase'", [sv.sh1])).n;
+  if (n !== 1 || (await bal('sh1')) !== 160) throw new Error('double débit');
+  await expectErr('INVALID_PURCHASE', () => buy('sh1', 'solo', game, 'constraint_reroll', id)); // même identifiant, autre achat
+  await expectErr('INVALID_PURCHASE', () => buy('sh2', 'solo', game, 'refill', id)); // identifiant d'un autre joueur
+  const chk = await rpc('sh1', 'survivor_buy_check', 'solo', game, id);
+  if (!chk || chk.effect !== 20 || (await rpc('sh1', 'survivor_buy_check', 'solo', game, uuid())) !== null || (await rpc('sh2', 'survivor_buy_check', 'solo', game, id)) !== null) throw new Error('reçu récupérable seulement par son propriétaire');
+  await expectErr('Table immuable', () => db.query('update survivor_purchases set price = 1'));
+  const w = await rpc('sh1', 'survivor_wallet');
+  const h = w.history.find((x) => x.reason === 'purchase');
+  if (!h || h.amount !== -40 || h.item !== 'refill' || w.balance !== 160) throw new Error(JSON.stringify(w));
+});
+await check('Solo: deux achats par partie, une fois par type; la partie d’un autre est inaccessible', async () => {
+  const game = uuid();
+  await buy('sh1', 'solo', game, 'constraint_reroll');
+  await expectErr('ALREADY_BOUGHT', () => buy('sh1', 'solo', game, 'constraint_reroll'));
+  const e = await buy('sh1', 'solo', game, 'emergency_refill');
+  if (e.price !== 60 || e.effect !== 25) throw new Error(JSON.stringify(e));
+  await expectErr('PURCHASE_LIMIT', () => buy('sh1', 'solo', game, 'upgrade_reroll'));
+  await expectErr('GAME_NOT_FOUND', () => buy('sh2', 'solo', game, 'refill'));
+  await expectErr('UNKNOWN_ITEM', () => buy('sh1', 'solo', uuid(), 'cheat'));
+  await expectErr('INVALID_PURCHASE', () => buy('sh1', 'nope', uuid(), 'refill'));
+  if ((await rpc('sh1', 'survivor_shop', 'solo', game)).remaining !== 0) throw new Error('compteur');
+});
+await check('solde insuffisant: aucun débit, aucune trace', async () => {
+  await fund('sh2', 20);
+  const before = await ledgerCount('sh2');
+  const game = uuid();
+  await expectErr('INSUFFICIENT_FUNDS', () => buy('sh2', 'solo', game, 'upgrade_reroll', uuid()).then(() => buy('sh2', 'solo', game, 'refill'))); // 25 > 20
+  if ((await bal('sh2')) !== 20 || (await ledgerCount('sh2')) !== before) throw new Error('débit malgré le refus');
+  if ((await row('select count(*)::int n from survivor_purchases where user_id=$1', [sv.sh2])).n !== 0) throw new Error('achat enregistré');
+});
+
+let shg;
+await check('Relay: Recharge, plafonnée, seulement avant de dessiner et s’il manque au moins 20', async () => {
+  shg = await shopRelay('sh3');
+  await fund('sh3', 400); await fund('sh4', 100);
+  await state('sh3', shg);
+  await expectErr('NOT_AVAILABLE', () => buy('sh3', 'game', shg, 'refill')); // réserve pleine
+  await setRun(shg, 'reserve = 85');
+  await expectErr('NOT_AVAILABLE', () => buy('sh3', 'game', shg, 'refill')); // il manque 15
+  await setRun(shg, 'reserve = 70');
+  const r = await buy('sh3', 'game', shg, 'refill');
+  const run = r.state.run;
+  if (run.reserve !== 90 || r.balance !== 360 || r.price !== 40) throw new Error(JSON.stringify([run.reserve, r.balance]));
+  await rpc('sh3', 'survivor_pick', shg, run.proposals[0].id);
+  await setRun(shg, 'reserve = 80');
+  await expectErr('ALREADY_BOUGHT', () => buy('sh3', 'game', shg, 'refill'));
+  if ((await bal('sh4')) !== 100) throw new Error('les autres participants ne paient jamais');
+});
+await check('Relay: Dernière chance ajoute 25 pendant le dessin, jamais avec un secours gratuit ni sans case choisie', async () => {
+  await setRun(shg, 'emergency = 1');
+  await expectErr('NOT_AVAILABLE', () => buy('sh3', 'game', shg, 'emergency_refill'));
+  await setRun(shg, 'emergency = 0, reserve = 8');
+  const before = await bal('sh3');
+  const r = await buy('sh3', 'game', shg, 'emergency_refill');
+  if (r.state.run.reserve !== 33 || r.state.run.pick === null || r.effect !== 25 || before - r.balance !== 60) throw new Error(JSON.stringify(r.state.run));
+  if (r.state.run.emergency !== 0 || r.state.run.emergency_uses !== 0) throw new Error('le Dernier souffle gratuit ne doit pas bouger');
+});
+await check('Relay: transaction annulée entièrement si un enregistrement échoue', async () => {
+  await db.query("create function survivor_test_boom() returns trigger language plpgsql as $$ begin raise exception 'BOOM'; end $$");
+  await db.query('create trigger survivor_test_boom before insert on survivor_purchases for each row execute function survivor_test_boom()');
+  try {
+    await db.query('delete from survivor_rate_limits');
+    const before = { bal: await bal('sh3'), n: await ledgerCount('sh3'), run: await runOf('sh3', shg).catch(() => null) };
+    const proposals = JSON.stringify((await runOf('sh3', shg)).proposals);
+    await expectErr('BOOM', async () => { await state('sh3', shg); await db.query("update survivor_runs set pick = null, pick_by = null where game_id=$1 and user_id is null", [shg]); return buy('sh3', 'game', shg, 'constraint_reroll'); });
+    if ((await bal('sh3')) !== before.bal || (await ledgerCount('sh3')) !== before.n) throw new Error('débit conservé après l’échec');
+    if (JSON.stringify((await runOf('sh3', shg)).proposals) !== proposals) throw new Error('effet conservé après l’échec');
+  } finally { await db.query('drop trigger survivor_test_boom on survivor_purchases'); await db.query('drop function survivor_test_boom()'); }
+});
+await check('Relay: Joker payant relance les trois demandes sans toucher aux charges ni aux cases précédentes', async () => {
+  await setRun(shg, 'jokers = 2, joker_uses = 0');
+  const before = (await runOf('sh3', shg)).proposals.map((p) => p.id);
+  const r = await buy('sh3', 'game', shg, 'constraint_reroll');
+  const after = r.state.run;
+  if (after.proposals.length !== 3) throw new Error('propositions');
+  if (JSON.stringify(after.proposals.map((p) => p.id)) === JSON.stringify(before)) throw new Error('propositions inchangées');
+  if (after.jokers !== 2 || after.joker_uses !== 0 || r.balance !== (await bal('sh3'))) throw new Error('les charges de Joker gagnées ne doivent pas être consommées');
+  if (after.cases_done !== (await row('select cases_done from survivor_runs where game_id=$1 and user_id is null', [shg])).cases_done) throw new Error('cases');
+});
+await check('Relay: limite collective de trois achats, quel que soit l’acheteur', async () => {
+  const g = await shopRelay('sh3');
+  await state('sh3', g);
+  await setRun(g, 'reserve = 50');
+  await buy('sh3', 'game', g, 'refill');
+  await rpc('sh3', 'survivor_pick', g, (await runNow('sh3', g)).proposals[0].id);
+  await buy('sh3', 'game', g, 'emergency_refill');
+  await turn('sh3', g); // case 1 publiée: le relais passe
+  await rpc('sh4', 'survivor_reserve', g);
+  await state('sh4', g);
+  await buy('sh4', 'game', g, 'constraint_reroll'); // troisième achat, payé par sh4
+  await expectErr('PURCHASE_LIMIT', () => buy('sh4', 'game', g, 'upgrade_reroll'));
+  if ((await rpc('sh4', 'survivor_shop', 'game', g)).remaining !== 0) throw new Error('compteur partagé');
+  shg = g;
+});
+await check('Relay: seul le joueur qui peut agir achète (ni ancien contributeur, ni extérieur, ni partie finie)', async () => {
+  const g = await shopRelay('sh5');
+  await state('sh5', g); await fund('sh5', 300); await fund('sh6', 300);
+  await expectErr('NO_RESERVATION', () => buy('sh6', 'game', g, 'constraint_reroll')); // jamais réservé
+  await turn('sh5', g); // sh5 contribue puis perd sa réservation
+  await expectErr('NO_RESERVATION', () => buy('sh5', 'game', g, 'constraint_reroll')); // ancien contributeur
+  await rpc('sh6', 'survivor_reserve', g);
+  const before = await bal('sh5');
+  await buy('sh6', 'game', g, 'constraint_reroll');
+  if ((await bal('sh5')) !== before) throw new Error('prélèvement chez un autre participant');
+  await rpc('sh6', 'survivor_abandon', g);
+  await db.query("update survivor_games set status='abandoned', ended_reason='expired', finished_at=now() where id=$1", [g]);
+  await expectErr('GAME_NOT_ACTIVE', () => buy('sh6', 'game', g, 'refill'));
+  if ((await bal('sh6')) !== 270) throw new Error('débit après la fin de partie');
+});
+await check('Relay: Second choix remplace les trois améliorations sans en accorder, sinon refusé sans débit', async () => {
+  const g = await shopRelay('sh3');
+  await state('sh3', g);
+  await rpc('sh3', 'survivor_reserve', g).catch(() => undefined);
+  await turn('sh3', g);
+  await rpc('sh4', 'survivor_reserve', g);
+  await turn('sh4', g, { finish: false }); // 2e case: amélioration due, choisie par sh4
+  const st = await state('sh4', g);
+  if (st.run.step !== 'upgrade') throw new Error('amélioration attendue');
+  const old = st.run.offer;
+  await expectErr('NOT_AVAILABLE', () => buy('sh4', 'game', g, 'refill'));
+  const full = Object.fromEntries((await db.query('select id, max_stacks from survivor_upgrade_defs')).rows.map((u) => [u.id, u.max_stacks]));
+  const owned = JSON.stringify(Object.fromEntries(Object.entries(full).filter(([id]) => !old.includes(id)).slice(1).map(([id, m]) => [id, m])));
+  const keep = (await row('select upgrades u from survivor_runs where game_id=$1 and user_id is null', [g])).u;
+  await setRun(g, `upgrades = '${owned}'::jsonb`); // un seul candidat nouveau: pas de renouvellement possible
+  const b = await bal('sh4'), n = await ledgerCount('sh4');
+  await expectErr('NO_NEW_OFFER', () => buy('sh4', 'game', g, 'upgrade_reroll'));
+  if ((await bal('sh4')) !== b || (await ledgerCount('sh4')) !== n) throw new Error('débit malgré le refus');
+  await setRun(g, `upgrades = '${JSON.stringify(keep)}'::jsonb`);
+  const r = await buy('sh4', 'game', g, 'upgrade_reroll');
+  const now = r.state.run;
+  if (now.step !== 'upgrade' || now.offer.length !== 3 || now.offer.some((id) => old.includes(id))) throw new Error(JSON.stringify([old, now.offer]));
+  if (Object.values(now.upgrades).some((v) => v > 0) && JSON.stringify(now.upgrades) !== JSON.stringify(keep)) throw new Error('une amélioration a été accordée');
+  const g2 = await row('select upgrade_draws d from survivor_runs where game_id=$1 and user_id is null', [g]);
+  if (g2.d !== 1) throw new Error('le tirage normal ne doit pas bouger');
+  const seed = (await row('select seed from survivor_games where id=$1', [g])).seed;
+  const direct = (await db.query("select survivor_draw_offer_salt($1, $2::jsonb, 'r1', $3::jsonb) o", [seed, JSON.stringify(keep), JSON.stringify(old)])).rows[0].o;
+  if (JSON.stringify(direct) !== JSON.stringify(now.offer)) throw new Error('tirage non reproductible');
+  const choose = await rpc('sh4', 'survivor_choose_upgrade', g, now.offer[0]);
+  if (choose.state.run.step !== 'choosing') throw new Error('choix impossible après le renouvellement');
+});
+await check('Duel et Battle: aucun achat possible, même avec du solde; mêmes conditions pour les deux joueurs', async () => {
+  await fund('sh7', 300); await fund('sh8', 300);
+  for (const mode of ['duel', 'battle']) {
+    const g = await pair(mode, 'sh7', 'sh8');
+    for (const item of ['refill', 'constraint_reroll', 'upgrade_reroll', 'emergency_refill']) {
+      for (const u of ['sh7', 'sh8']) await expectErr('SHOP_NOT_ALLOWED', () => buy(u, 'game', g, item));
+    }
+    const sh = await rpc('sh7', 'survivor_shop', 'game', g);
+    if (sh.allowed !== false || sh.remaining !== 0) throw new Error(JSON.stringify(sh));
+    await expectErr('GAME_NOT_FOUND', () => buy('sh3', 'game', g, 'refill'));
+  }
+  if ((await bal('sh7')) !== 300 || (await bal('sh8')) !== 300) throw new Error('débit en Duel ou en Battle');
+  if ((await row("select count(*)::int n from survivor_purchases p join survivor_games g on g.id = p.game_id where g.mode in ('duel','battle')")).n !== 0) throw new Error('achat enregistré');
+});
+await check('concurrence simulée: deux achats pour un solde insuffisant, le second est refusé; rejeu et double clic sans double effet', async () => {
+  await fund('sh8', 0 + 5); // 305 → on ramène à 45 par une dépense Solo
+  const solo = uuid();
+  await db.query("update survivor_wallets set balance = 45 where user_id = $1", [sv.sh8]);
+  const a = await buy('sh8', 'solo', solo, 'refill'); // 40
+  if (a.balance !== 5) throw new Error('solde');
+  await expectErr('INSUFFICIENT_FUNDS', () => buy('sh8', 'solo', solo, 'constraint_reroll')); // 30 > 5
+  const id = uuid();
+  const g = await shopRelay('sh3');
+  await state('sh3', g); await setRun(g, 'reserve = 40');
+  const p = await Promise.allSettled([buy('sh3', 'game', g, 'refill', id), buy('sh3', 'game', g, 'refill', id)]);
+  if (p.some((x) => x.status !== 'fulfilled')) throw new Error('double clic: ' + JSON.stringify(p.map((x) => x.reason?.message)));
+  const n = (await row("select count(*)::int n from survivor_ink_ledger where idempotency_key = $1", ['buy:' + id])).n;
+  if (n !== 1 || (await runNow('sh3', g)).reserve !== 60) throw new Error('double effet');
+});
+await check('récompenses d’arbitrage et solde préservés; solde = somme du registre, jamais négatif', async () => {
+  const bad = (await db.query('select w.user_id from survivor_wallets w where w.balance <> (select coalesce(sum(amount), 0) from survivor_ink_ledger l where l.user_id = w.user_id) and w.user_id <> $1', [sv.sh8])).rows;
+  if (bad.length) throw new Error('solde ≠ somme du registre');
+  if ((await row('select count(*)::int n from survivor_wallets where balance < 0')).n !== 0) throw new Error('solde négatif');
+  const gains = (await row("select count(*)::int n from survivor_ink_ledger where reason in ('arbiter_vote','arbiter_complete','vote_received') and amount in (2, 5, 10)")).n;
+  if (gains < 10) throw new Error('récompenses d’arbitrage');
+});
+
 console.log(results.join('\n'));
